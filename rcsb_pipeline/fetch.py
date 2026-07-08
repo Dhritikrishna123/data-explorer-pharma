@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-from rich.progress import Progress
 from rcsbapi.data import DataQuery
+from rich.progress import Progress
 
 from rcsb_pipeline.cache import ResponseCache
 
+logger = logging.getLogger("rcsb-pipeline")
 
-def _execute_entry_query(
-    pdb_ids: List[str], field_paths: List[str]
-) -> Dict[str, Any]:
+
+def _execute_entry_query(pdb_ids: list[str], field_paths: list[str]) -> dict[str, Any]:
     query = DataQuery(
         input_type="entry",
         input_ids=pdb_ids,
@@ -34,9 +34,7 @@ def _execute_entry_query(
     return data
 
 
-def _execute_uniprot_query(
-    uniprot_ids: List[str], field_paths: List[str]
-) -> Dict[str, Any]:
+def _execute_uniprot_query(uniprot_ids: list[str], field_paths: list[str]) -> dict[str, Any]:
     query = DataQuery(
         input_type="uniprot",
         input_ids=uniprot_ids,
@@ -60,33 +58,37 @@ def _execute_uniprot_query(
 
 
 def fetch_entry_data(
-    pdb_ids: List[str],
-    field_paths: List[str],
+    pdb_ids: list[str],
+    field_paths: list[str],
     cache: ResponseCache,
-    max_concurrent: int = 5,
+    max_concurrent: int = 5,  # noqa: ARG001
     rate_limit: float = 0.3,
-    retry_max: int = 3,
-    progress: Optional[Progress] = None,
-) -> Dict[str, Optional[Dict[str, Any]]]:
+    retry_max: int = 3,  # noqa: ARG001
+    progress: Progress | None = None,
+) -> dict[str, dict[str, Any] | None]:
     """Fetch entry-level data for a list of PDB IDs.
 
     Returns:
         {pdb_id: response_dict_or_None}
     """
-    results: Dict[str, Optional[Dict[str, Any]]] = {}
-    uncached_ids: List[str] = []
+    results: dict[str, dict[str, Any] | None] = {}
+    uncached_ids: list[str] = []
 
     task = None
     if progress:
         task = progress.add_task("[cyan]Fetching PDB entry data...", total=len(pdb_ids))
+    task_id = task
+
+    def _advance() -> None:
+        if task_id is not None and progress is not None:
+            progress.advance(task_id)
 
     for pdb_id in pdb_ids:
         cache_key = f"entry:{pdb_id}:{','.join(sorted(field_paths))}"
         cached = cache.get(cache_key)
         if cached is not None:
             results[pdb_id] = cached
-            if task:
-                progress.advance(task)
+            _advance()
         else:
             uncached_ids.append(pdb_id)
 
@@ -104,44 +106,46 @@ def fetch_entry_data(
                     if pdb_id not in data:
                         results[pdb_id] = {"rcsb_id": pdb_id, "_no_data": True}
                 time.sleep(rate_limit)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Entry fetch failed for batch starting with %s: %s", batch[0], e, exc_info=True)
                 for pdb_id in batch:
                     results[pdb_id] = {"rcsb_id": pdb_id, "error": str(e)}
-            if task:
-                for _ in batch:
-                    progress.advance(task)
+            for _ in batch:
+                _advance()
 
     return results
 
 
 def fetch_uniprot_data(
-    uniprot_ids: List[str],
-    field_paths: List[str],
+    uniprot_ids: list[str],
+    field_paths: list[str],
     cache: ResponseCache,
-    max_concurrent: int = 5,
+    max_concurrent: int = 5,  # noqa: ARG001
     rate_limit: float = 0.3,
-    progress: Optional[Progress] = None,
-) -> Dict[str, Optional[Dict[str, Any]]]:
+    progress: Progress | None = None,
+) -> dict[str, dict[str, Any] | None]:
     """Fetch UniProt enhanced data for a list of UniProt IDs."""
-    results: Dict[str, Optional[Dict[str, Any]]] = {}
-    uncached_ids: List[str] = []
+    results: dict[str, dict[str, Any] | None] = {}
+    uncached_ids: list[str] = []
 
     task = None
     if progress:
         task = progress.add_task("[cyan]Fetching UniProt data...", total=len(uniprot_ids))
 
+    def _advance() -> None:
+        if task is not None and progress is not None:
+            progress.advance(task)
+
     for uid in uniprot_ids:
         uid = uid.strip()
         if not uid:
-            if task:
-                progress.advance(task)
+            _advance()
             continue
         cache_key = f"uniprot:{uid}:{','.join(sorted(field_paths))}"
         cached = cache.get(cache_key)
         if cached is not None:
             results[uid] = cached
-            if task:
-                progress.advance(task)
+            _advance()
         else:
             uncached_ids.append(uid)
 
@@ -159,19 +163,19 @@ def fetch_uniprot_data(
                     if uid not in data:
                         results[uid] = {"rcsb_id": uid, "_no_data": True}
                 time.sleep(rate_limit)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                logger.warning("UniProt fetch failed for batch starting with %s: %s", batch[0], e, exc_info=True)
                 for uid in batch:
                     results[uid] = {"rcsb_id": uid, "error": str(e)}
-            if task:
-                for _ in batch:
-                    progress.advance(task)
+            for _ in batch:
+                _advance()
 
     return results
 
 
 def save_raw_data(
-    entry_data: Dict[str, Optional[Dict]],
-    uniprot_data: Dict[str, Optional[Dict]],
+    entry_data: dict[str, dict | None],
+    uniprot_data: dict[str, dict | None],
     output_dir: str,
 ) -> None:
     """Save raw fetched data to JSON files."""
@@ -182,12 +186,16 @@ def save_raw_data(
     with open(entry_path, "w") as f:
         json.dump(
             {k: v for k, v in entry_data.items() if v is not None},
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
 
     uniprot_path = out / "uniprot_data.json"
     with open(uniprot_path, "w") as f:
         json.dump(
             {k: v for k, v in uniprot_data.items() if v is not None},
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )

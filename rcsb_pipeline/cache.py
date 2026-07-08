@@ -7,7 +7,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 class ResponseCache:
@@ -17,27 +17,17 @@ class ResponseCache:
         self._path = Path(db_path).expanduser()
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path))
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS cache ("
-            "  key TEXT PRIMARY KEY,"
-            "  value TEXT,"
-            "  created_at REAL"
-            ")"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cache_key ON cache(key)"
-        )
+        self._conn.execute("CREATE TABLE IF NOT EXISTS cache (  key TEXT PRIMARY KEY,  value TEXT,  created_at REAL)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_key ON cache(key)")
         self._conn.commit()
         self._ttl = ttl
 
     def _hash_key(self, key: str) -> str:
         return hashlib.sha256(key.encode()).hexdigest()
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         hkey = self._hash_key(key)
-        cursor = self._conn.execute(
-            "SELECT value, created_at FROM cache WHERE key = ?", (hkey,)
-        )
+        cursor = self._conn.execute("SELECT value, created_at FROM cache WHERE key = ?", (hkey,))
         row = cursor.fetchone()
         if row is None:
             return None

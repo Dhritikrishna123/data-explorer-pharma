@@ -58,12 +58,14 @@ training_data/
   - [fetch — Step 2 Only](#fetch--step-2-only)
   - [fields — Schema Introspection](#fields--schema-introspection)
   - [categories — Field Categories](#categories--field-categories)
+  - [columns — Column Registry](#columns--column-registry)
   - [report — Generate Reports](#report--generate-reports)
   - [validate — Validate Dataset](#validate--validate-dataset)
   - [init-config — Generate Config](#init-config--generate-config)
 - [Workflows](#workflows)
   - [Single Target Protein](#single-target-protein)
   - [Multi-Target Screening](#multi-target-screening)
+  - [Column Selection By Name](#column-selection-by-name)
   - [Custom Field Selection](#custom-field-selection)
   - [Quality-Focused (Best Resolution)](#quality-focused-best-resolution)
   - [Protein-Level Aggregation](#protein-level-aggregation)
@@ -187,7 +189,9 @@ rcsb-pipeline run [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--preset` | `standard` | `minimal`, `standard`, `full`, `custom` |
+| `--preset` | `standard` | `minimal`, `standard`, `full`, `custom` (auto-set to `custom` when `--columns` is used) |
+| `--columns` | — | Comma-separated short column names from the registry, e.g. `rcsb_id,resolution,method,sequence` |
+| `--column-file` | — | Path to custom column YAML file defining short name → field path mappings |
 | `--fields` | — | Path to custom field config YAML (used with `--preset custom`) |
 
 #### Output configuration
@@ -218,6 +222,7 @@ rcsb-pipeline run [OPTIONS]
 |--------|-------------|
 | `--no-cache` | Bypass SQLite cache (fetch fresh data) |
 | `--resume` | Path to checkpoint file from a previous run |
+| `--skip-registered` | Skip any (uniprot_id, pdb_id) pairs already recorded in the processed-data registry |
 | `--config` | Path to YAML config file |
 
 ### `discover` — Step 1 Only
@@ -283,6 +288,31 @@ rcsb-pipeline categories
 └━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┴━━━━━━━┘
 ```
 
+### `columns` — Column Registry
+
+List, search, and inspect the built-in column registry — ~15K short names
+that map friendly column names to RCSB field paths.
+
+```bash
+# Browse categories
+rcsb-pipeline columns --list-categories
+
+# Search by keyword
+rcsb-pipeline columns --search resolution
+
+# Filter by category
+rcsb-pipeline columns --category "Polymer Entity"
+
+# Use a custom column file
+rcsb-pipeline columns --column-file my_columns.yaml --search my_field
+```
+
+Use the short names with `--columns` on `run`:
+
+```bash
+rcsb-pipeline run --uniprots P01116 --columns "rcsb_id,resolution,method"
+```
+
 ### `report` — Generate Reports
 
 Generate reports from an already-completed run's output.
@@ -325,6 +355,70 @@ Generate a default YAML config file to customize.
 rcsb-pipeline init-config ./my_custom_config.yaml
 ```
 
+### `registry` — Processed Data Registry
+
+Manage the persistent ledger that tracks every successfully exported `(uniprot_id, pdb_id)` pair so nothing gets sent downstream twice.
+
+#### `registry status`
+
+Show statistics for the processed-data registry.
+
+```bash
+rcsb-pipeline registry status
+rcsb-pipeline registry status --verbose
+```
+
+Output:
+```
+Processed Data Registry
+  Total entries:         1247
+  Stale entries:         0
+  Unique UniProt IDs:    2
+  Unique PDB IDs:        841
+  Latest run:            2026-07-08T12:34:56.789012+00:00
+
+By preset:
+  standard               1247 entries
+```
+
+#### `registry diff`
+
+Compare a set of targets against the registry without running the pipeline. Shows which are new vs already processed.
+
+```bash
+# Check UniProts against the registry
+rcsb-pipeline registry diff --uniprots P01116,P04637
+
+# With specific PDB IDs (cross product)
+rcsb-pipeline registry diff --uniprots P01116 --pdb-ids 1ABC,2XYZ
+```
+
+#### `registry mark`
+
+Mark entries as **stale** (will be reprocessed next run) or **fresh**.
+
+```bash
+# Mark specific UniProts for reprocessing
+rcsb-pipeline registry mark --stale --uniprots P01116
+
+# Mark all entries as fresh (undo stale)
+rcsb-pipeline registry mark --fresh
+
+# Mark all entries stale (force full reprocess)
+rcsb-pipeline registry mark --stale
+```
+
+#### `registry clear`
+
+Delete entries from the registry. Requires `--force`.
+
+```bash
+# Clear specific UniProts
+rcsb-pipeline registry clear --uniprots P01116 --force
+
+# Clear entire registry
+rcsb-pipeline registry clear --force
+```
 ---
 
 ## Workflows
@@ -358,6 +452,24 @@ rcsb-pipeline run \
 P01116    # KRAS
 P04637    # TP53
 P21802    # FGFR2
+```
+
+### Column Selection By Name
+
+Pick columns by friendly short names instead of raw RCSB field paths:
+
+```bash
+# 1. Find column short names
+rcsb-pipeline columns --search resolution
+
+# 2. Run with comma-separated column names (auto-sets --preset custom)
+rcsb-pipeline run --uniprots P01116 \
+  --columns "rcsb_id,resolution_combined,method,rcsb_uniprot_protein_sequence" \
+  --output ./column_output
+
+# 3. Or pipe from CLI search
+rcsb-pipeline columns --search "mol" --include-keys-only | xargs | tr ' ' ',' > cols.txt
+# ... then use --column-file (not implemented yet in this example)
 ```
 
 ### Custom Field Selection
@@ -825,6 +937,7 @@ pipeline:
   cache_dir: ~/.cache/rcsb-pipeline    # SQLite cache location
   log_dir: ./logs                       # Pipeline logs (auto-set to {output_dir}/logs)
   checkpoint: ./checkpoint.json         # Resume checkpoint (auto-set to {output_dir}/checkpoint.json)
+  registry_db: ~/.cache/rcsb-pipeline-registry.db  # Processed-data registry
   max_concurrent: 5                     # Parallel API workers
   rate_limit: 0.3                       # Seconds between batches
   batch_size: 50                        # PDB IDs per GraphQL query
@@ -846,10 +959,12 @@ discovery:
   exclude_deprecated: true              # Skip deprecated entries
 
 fields:
-  preset: standard                      # minimal / standard / full / custom
+  preset: standard                      # minimal / standard / full / custom (auto-set to custom with --columns)
   include: []                           # Custom field paths (for custom preset)
   exclude: []                           # Fields to exclude (not yet implemented)
   custom_config: null                   # Path to custom YAML (for custom preset)
+  columns: []                           # Short column names from registry
+  column_file: null                     # Path to custom column YAML file
 
 output:
   directory: ./rcsb_output              # Output directory
@@ -900,6 +1015,10 @@ training_data/
 ├── run_config.yaml                # Frozen config for this run
 ├── field_config.yaml              # Frozen field selection
 └── checkpoint.json                # Resume checkpoint
+
+~/.cache/rcsb-pipeline/
+├── rcsb_cache.db                  # SQLite API response cache
+└── registry.db                    # Processed-data registry (shared across runs)
 ```
 
 ---
@@ -950,6 +1069,109 @@ rcsb-pipeline run --resume ./my_run/checkpoint.json --output ./my_run
 ```
 
 **Important:** Resume requires the same output directory and cache. Discovery and fetch results are loaded from the checkpoint, not re-executed.
+
+---
+
+## Processed Data Registry
+
+Every time a pipeline run completes, every `(uniprot_id, pdb_id)` pair in the
+output dataset is recorded in a **persistent SQLite registry**. This guarantees
+that the same data is never sent to downstream teams more than once.
+
+### Location
+
+`~/.cache/rcsb-pipeline-registry.db` (configurable via `pipeline.registry_db`)
+
+### Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `uniprot_id` | TEXT | UniProt accession |
+| `pdb_id` | TEXT | PDB entry ID |
+| `run_id` | TEXT | Unique run identifier (timestamp) |
+| `preset` | TEXT | Field preset used (minimal / standard / full) |
+| `granularity` | TEXT | Output granularity |
+| `output_dir` | TEXT | Where the output was written |
+| `checksum` | TEXT | Data checksum (reserved for future use) |
+| `stale` | INTEGER | 0 = fresh, 1 = marked for reprocessing |
+| `created_at` | TEXT | When first recorded |
+| `updated_at` | TEXT | Last modification time |
+
+### Deduplication key
+
+A `UNIQUE` constraint on `(uniprot_id, pdb_id, preset, granularity)` prevents
+recording the exact same combination twice. If you re-run with a different
+preset or granularity, those are treated as distinct entries.
+
+### How data flows through the registry
+
+```
+                    ┌──────────────────────────────────┐
+                    │          Pipeline Run              │
+                    │  --skip-registered (optional)      │
+                    └──────────┬───────────────────────┘
+                               │
+                               ▼
+                    ┌──────────────────────────────────┐
+                    │  Registry check before transform  │
+                    │  - Queries registry.db            │
+                    │  - Skips (uniprot, pdb) pairs     │
+                    │    already recorded & not stale   │
+                    └──────────┬───────────────────────┘
+                               │
+                               ▼
+                    ┌──────────────────────────────────┐
+                    │  Transform + Export               │
+                    │  - Builds dataset from new data   │
+                    │  - Writes CSV / Parquet / etc.    │
+                    └──────────┬───────────────────────┘
+                               │
+                               ▼
+                    ┌──────────────────────────────────┐
+                    │  Registry recording               │
+                    │  - INSERT OR REPLACE every        │
+                    │    (uniprot, pdb) pair in output  │
+                    │  - Records preset, granularity    │
+                    └──────────────────────────────────┘
+```
+
+### Common workflows
+
+**First run — record everything:**
+```bash
+rcsb-pipeline run --uniprots targets.txt
+# → 1247 entries written, all recorded in registry
+```
+
+**Second run — skip duplicates:**
+```bash
+rcsb-pipeline run --uniprots targets.txt --skip-registered
+# → 0 new entries, everything already in registry
+```
+
+**Add new targets — only new ones are processed:**
+```bash
+rcsb-pipeline run --uniprots P01116,P04637,P12345 --skip-registered
+# → Only P12345 is processed; P01116 and P04637 skipped
+```
+
+**Force reprocess after data refresh:**
+```bash
+# Mark stale
+rcsb-pipeline registry mark --stale --uniprots P01116
+
+# Re-run without --skip-registered to rebuild
+rcsb-pipeline run --uniprots P01116 --output ./fresh
+# Registry is automatically updated with new records
+```
+
+**Reset the entire ledger:**
+```bash
+rcsb-pipeline registry clear --force
+
+# Or just delete the file
+rm -f ~/.cache/rcsb-pipeline-registry.db
+```
 
 ---
 
@@ -1023,6 +1245,7 @@ rcsb-pipeline run --resume ./my_run/checkpoint.json --output ./my_run
 │  │  Logs    → pipeline.log, discovery.jsonl, fetch  │    │
 │  │  Config  → run_config.yaml, field_config.yaml    │    │
 │  │  Checkpoint → checkpoint.json                    │    │
+│  │  Registry → registry.db (record all exported)    │    │
 │  └──────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -1031,13 +1254,15 @@ rcsb-pipeline run --resume ./my_run/checkpoint.json --output ./my_run
 
 | Module | File | Purpose | Key Dependencies |
 |--------|------|---------|-----------------|
-| **Config** | `config.py` | Pydantic models, YAML loading, preset resolution | `pydantic`, `pyyaml` |
+| **Config** | `config.py` | Pydantic models, YAML loading, preset resolution, column registry config | `pydantic`, `pyyaml` |
 | **Schema Loader** | `schema_loader.py` | Live GraphQL introspection of RCSB schema | `rcsbapi.data` |
 | **Discovery** | `discovery.py` | Search API → PDB IDs per UniProt | `rcsbapi.search` |
 | **Cache** | `cache.py` | SQLite-backed response cache with TTL | `sqlite3` (stdlib) |
 | **Fetch** | `fetch.py` | Batched Data API queries (entry + uniprot) | `rcsbapi.data`, `cache` |
 | **Transform** | `transform.py` | Dedup, missing values, aggregation, type coercion | `pandas` |
-| **Export** | `export.py` | All output formats + report generation | `pandas`, `pyarrow`, `openpyxl` |
+| **Export** | `export.py` | All output formats + report generation + registry recording | `pandas`, `pyarrow`, `openpyxl` |
+| **Registry** | `registry.py` | Processed-data SQLite ledger (never re-send duplicates) | `sqlite3` (stdlib) |
+| **Column Registry** | `column_registry.py` | Loads `columns.yaml`, resolves short names → field paths, search/category filtering | `pyyaml` |
 | **CLI** | `cli.py` | Typer CLI wiring all modules | `typer`, `rich` |
 
 ---
@@ -1129,6 +1354,20 @@ rm -rf ~/.cache/rcsb-pipeline
 rcsb-pipeline run --uniprots P01116 --no-cache --output ./fresh
 ```
 
+### Registry not skipping as expected
+
+Possible causes:
+- The entry was recorded with a **different preset or granularity** — the registry uses `(uniprot_id, pdb_id, preset, granularity)` as its unique key
+- The entry has been **marked stale** — run `rcsb-pipeline registry mark --fresh --uniprots YOUR_ID` to un-stale it
+- You forgot `--skip-registered` — the flag is opt-in; without it, the pipeline processes everything
+
+**Check:** `rcsb-pipeline registry status --verbose` to see preset breakdowns.
+**Reset:** `rcsb-pipeline registry clear --force` to start fresh.
+
+### Registry database locked
+
+If you see `database is locked` errors, another pipeline instance is writing to the registry. The registry uses WAL mode for concurrent access, but simultaneous writes from the same database file can cause locking. Wait for the other process to finish, or use a different `registry_db` path.
+
 ### Slow performance
 
 - **Use Parquet:** `--format parquet` — 5-10x faster to read/write
@@ -1152,7 +1391,7 @@ For runs with 5000+ entries:
 # Install in development mode
 pip install -e .
 
-# Run tests (25 smoke tests)
+# Run tests (186 tests across 7 test modules)
 pytest tests/ -v
 
 # Run tests with coverage
@@ -1169,7 +1408,13 @@ rcsb-pipeline validate /tmp/test_run/final_dataset.csv
 
 | Test File | Tests |
 |-----------|-------|
-| `tests/test_pipeline.py` | 25 tests covering config, cache, dedup, missing values, aggregation, sanitization, export, reports, unhashable type handling, CLI commands |
+| `tests/test_pipeline.py` | Pipeline orchestration and field resolution |
+| `tests/test_cli.py` | CLI command invocation and reporting |
+| `tests/test_discovery.py` | Search API mocking, caching, deduplication |
+| `tests/test_fetch.py` | Data API batching, retries, and caching |
+| `tests/test_column_registry.py` | Column resolution and YAML loading |
+| `tests/test_registry.py` | SQLite registry CRUD and staleness |
+| `tests/test_schema_loader.py` | GraphQL schema introspection |
 
 ---
 

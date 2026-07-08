@@ -3,25 +3,28 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from rich.progress import Progress
 
 from rcsb_pipeline.cache import ResponseCache
 
+logger = logging.getLogger("rcsb-pipeline")
+
 
 def discover_pdb_ids(
-    uniprot_ids: List[str],
+    uniprot_ids: list[str],
     cache: ResponseCache,
-    max_entries: int = 1000,
-    min_resolution: float = 0.0,
-    max_resolution: float = 10.0,
-    experimental_methods: Optional[List[str]] = None,
-    exclude_deprecated: bool = True,
-    progress: Optional[Progress] = None,
-) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
+    max_entries: int = 1000,  # noqa: ARG001
+    min_resolution: float = 0.0,  # noqa: ARG001
+    max_resolution: float = 10.0,  # noqa: ARG001
+    experimental_methods: list[str] | None = None,  # noqa: ARG001
+    exclude_deprecated: bool = True,  # noqa: ARG001
+    progress: Progress | None = None,
+) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
     """For each UniProt ID, find matching PDB entries via RCSB Search API.
 
     Returns:
@@ -29,11 +32,11 @@ def discover_pdb_ids(
             uniprot_to_pdbs: {uniprot_id: [pdb_id, ...]}
             raw_results: list of raw search response dicts
     """
-    from rcsbapi.search import NestedAttributeQuery, AttributeQuery
+    from rcsbapi.search import AttributeQuery, NestedAttributeQuery
 
-    uniprot_to_pdbs: Dict[str, List[str]] = {}
-    all_raw: List[Dict[str, Any]] = []
-    seen_pdbs: Set[str] = set()
+    uniprot_to_pdbs: dict[str, list[str]] = {}
+    all_raw: list[dict[str, Any]] = []
+    seen_pdbs: set[str] = set()
 
     task = None
     if progress:
@@ -64,8 +67,9 @@ def discover_pdb_ids(
                 result = list(query(return_type="entry"))
                 cache.set(cache_key, result)
                 time.sleep(0.3)
-            except Exception as e:
+            except Exception:  # noqa: BLE001
                 result = []
+                logger.warning("Discovery failed for %s", uid, exc_info=True)
 
         all_raw.append({"uniprot_id": uid, "result": result})
 
@@ -84,20 +88,20 @@ def discover_pdb_ids(
                         seen_pdbs.add(pdb_id)
 
         uniprot_to_pdbs[uid] = pdb_ids
-        if task:
+        if task is not None and progress is not None:
             progress.advance(task)
 
     return uniprot_to_pdbs, all_raw
 
 
 def resolve_gene_symbols(
-    gene_symbols: List[str],
+    gene_symbols: list[str],
     cache: ResponseCache,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Resolve gene symbols to UniProt IDs using MyGene.info."""
     import requests
 
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     for gene in gene_symbols:
         gene = gene.strip()
         if not gene:
@@ -111,7 +115,7 @@ def resolve_gene_symbols(
         try:
             resp = requests.get(
                 "https://mygene.info/v3/query",
-                params={"q": gene, "species": "human", "fields": "uniprot", "size": 1},
+                params={"q": gene, "species": "human", "fields": "uniprot", "size": "1"},
                 timeout=10,
             )
             data = resp.json()
@@ -127,13 +131,14 @@ def resolve_gene_symbols(
             else:
                 cache.set(cache_key, "")
             time.sleep(0.1)
-        except Exception:
+        except Exception:  # noqa: BLE001
+            logger.warning("Gene symbol resolution failed for %s", gene, exc_info=True)
             cache.set(cache_key, "")
     return result
 
 
 def save_discovery_results(
-    uniprot_to_pdbs: Dict[str, List[str]],
+    uniprot_to_pdbs: dict[str, list[str]],
     output_dir: str,
 ) -> None:
     """Save discovery results to JSON."""

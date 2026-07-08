@@ -5,18 +5,26 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
 import pandas as pd
+
+from rcsb_pipeline.registry import ProcessedRegistry
 
 
 def export_dataset(
     df: pd.DataFrame,
     output_dir: str,
-    formats: List[str],
+    formats: list[str],
     dataset_name: str = "final_dataset",
-) -> Dict[str, str]:
+    registry: ProcessedRegistry | None = None,
+    run_id: str = "",
+    preset: str = "",
+    granularity: str = "",
+) -> dict[str, str]:
     """Write the DataFrame to each requested format.
+
+    If a registry is provided, records every (uniprot_id, pdb_id) pair
+    from the dataset so it is never re-processed downstream.
 
     Returns:
         {format: filepath}
@@ -24,7 +32,7 @@ def export_dataset(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    written: Dict[str, str] = {}
+    written: dict[str, str] = {}
 
     if "csv" in formats:
         path = out / f"{dataset_name}.csv"
@@ -55,7 +63,51 @@ def export_dataset(
     summary_path = out / "dataset_summary.json"
     _write_summary(df, summary_path)
 
+    # ── Record in registry ──
+    _record_in_registry(df, registry, run_id, preset, granularity, output_dir)
+
     return written
+
+
+def _record_in_registry(
+    df: pd.DataFrame,
+    registry: ProcessedRegistry | None,
+    run_id: str,
+    preset: str,
+    granularity: str,
+    output_dir: str,
+) -> int:
+    """Record all (uniprot_id, pdb_id) pairs in the registry.
+
+    Returns count of recorded pairs.
+    """
+    if registry is None:
+        return 0
+
+    if "uniprot_id" not in df.columns or "pdb_id" not in df.columns:
+        return 0
+
+    pairs: list[tuple] = []
+    seen: set = set()
+    for _, row in df.iterrows():
+        uid = str(row.get("uniprot_id", "") or "")
+        pid = str(row.get("pdb_id", "") or "")
+        key = (uid, pid)
+        if key not in seen and uid and pid:
+            seen.add(key)
+            pairs.append((uid, pid))
+
+    if not pairs:
+        return 0
+
+    count = registry.record_batch(
+        pairs,
+        run_id=run_id,
+        preset=preset,
+        granularity=granularity,
+        output_dir=output_dir,
+    )
+    return count
 
 
 def _write_summary(df: pd.DataFrame, path: Path) -> None:
@@ -74,7 +126,7 @@ def _write_summary(df: pd.DataFrame, path: Path) -> None:
 
 def report_coverage(
     df: pd.DataFrame,
-    uniprot_to_pdbs: Optional[Dict[str, List[str]]] = None,
+    uniprot_to_pdbs: dict[str, list[str]] | None = None,
     output_dir: str = ".",
 ) -> str:
     """Generate coverage report as Markdown."""
@@ -90,7 +142,11 @@ def report_coverage(
         total_pdbs = len(set(p for ids in uniprot_to_pdbs.values() for p in ids))
 
         lines.append(f"**Input UniProts:** {total_uniprots}\n")
-        lines.append(f"**With PDB structures:** {uniprots_with} ({uniprots_with / total_uniprots * 100:.1f}%)\n" if total_uniprots else "")
+        lines.append(
+            f"**With PDB structures:** {uniprots_with} ({uniprots_with / total_uniprots * 100:.1f}%)\n"
+            if total_uniprots
+            else ""
+        )
         lines.append(f"**Without PDB structures:** {uniprots_without}\n")
         lines.append(f"**Unique PDB entries:** {total_pdbs}\n")
         lines.append(f"**Final dataset rows:** {len(df)}\n")
@@ -136,7 +192,7 @@ def report_missing_data(df: pd.DataFrame, output_dir: str) -> str:
     return str(path)
 
 
-def report_duplicates(df: pd.DataFrame, output_dir: str, keys: Optional[List[str]] = None) -> str:
+def report_duplicates(df: pd.DataFrame, output_dir: str, keys: list[str] | None = None) -> str:
     """Generate duplicate report."""
     lines = [
         "# Duplicate Report\n",
@@ -184,9 +240,9 @@ def report_field_coverage(df: pd.DataFrame, output_dir: str) -> str:
 
 def generate_all_reports(
     df: pd.DataFrame,
-    uniprot_to_pdbs: Dict[str, List[str]],
+    uniprot_to_pdbs: dict[str, list[str]],
     output_dir: str,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Generate all standard reports."""
     reports = {}
     reports["coverage"] = report_coverage(df, uniprot_to_pdbs, output_dir)

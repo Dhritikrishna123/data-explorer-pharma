@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
 
 import pandas as pd
-import pytest
 
 from rcsb_pipeline.cache import ResponseCache
 from rcsb_pipeline.config import RcsbPipelineConfig, load_preset
@@ -110,10 +108,12 @@ def test_handle_missing_fill_null() -> None:
 
 
 def test_aggregate_pick_best() -> None:
-    df = pd.DataFrame({
-        "uniprot_id": ["P1", "P1", "P2"],
-        "resolution": [2.0, 1.5, 3.0],
-    })
+    df = pd.DataFrame(
+        {
+            "uniprot_id": ["P1", "P1", "P2"],
+            "resolution": [2.0, 1.5, 3.0],
+        }
+    )
     result = aggregate_protein_rows(df, group_key="uniprot_id", mode="pick-best", sort_key="resolution")
     assert len(result) == 2
     p1_row = result[result["uniprot_id"] == "P1"]
@@ -121,10 +121,12 @@ def test_aggregate_pick_best() -> None:
 
 
 def test_aggregate_concat() -> None:
-    df = pd.DataFrame({
-        "uniprot_id": ["P1", "P1"],
-        "chain": ["A", "B"],
-    })
+    df = pd.DataFrame(
+        {
+            "uniprot_id": ["P1", "P1"],
+            "chain": ["A", "B"],
+        }
+    )
     result = aggregate_protein_rows(df, group_key="uniprot_id", mode="concat")
     assert len(result) == 1
     assert "A" in result["chain"].iloc[0]
@@ -132,11 +134,13 @@ def test_aggregate_concat() -> None:
 
 
 def test_sanitize_basic() -> None:
-    df = pd.DataFrame({
-        "uniprot_id": ["P1", "P1", "P2"],
-        "pdb_id": ["1ABC", "1ABC", "2XYZ"],
-        "resolution": [2.0, 2.0, 3.0],
-    })
+    df = pd.DataFrame(
+        {
+            "uniprot_id": ["P1", "P1", "P2"],
+            "pdb_id": ["1ABC", "1ABC", "2XYZ"],
+            "resolution": [2.0, 2.0, 3.0],
+        }
+    )
     result = sanitize(df, {"dedup_strategy": "strict", "missing_action": "fill-null", "granularity": "per-structure"})
     assert len(result) == 2
     assert result.columns.tolist() == ["uniprot_id", "pdb_id", "resolution"]
@@ -195,16 +199,19 @@ def test_report_coverage(tmp_path: Path) -> None:
 
 
 def test_sanitize_with_unhashable() -> None:
-    df = pd.DataFrame({
-        "uniprot_id": ["P1", "P1"],
-        "nested": [{"foo": "bar"}, {"foo": "bar"}],
-    })
+    df = pd.DataFrame(
+        {
+            "uniprot_id": ["P1", "P1"],
+            "nested": [{"foo": "bar"}, {"foo": "bar"}],
+        }
+    )
     result = sanitize(df, {"dedup_strategy": "strict", "missing_action": "fill-null", "granularity": "per-structure"})
     assert len(result) == 1
 
 
 def test_cli_help() -> None:
     from typer.testing import CliRunner
+
     from rcsb_pipeline.cli import app
 
     runner = CliRunner()
@@ -216,6 +223,7 @@ def test_cli_help() -> None:
 
 def test_cli_init_config(tmp_path: Path) -> None:
     from typer.testing import CliRunner
+
     from rcsb_pipeline.cli import app
 
     p = tmp_path / "test_config.yaml"

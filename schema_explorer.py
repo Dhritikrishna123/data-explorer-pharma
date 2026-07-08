@@ -21,7 +21,7 @@ import os
 import sys
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 try:
     from rcsbapi.data import DataSchema
@@ -33,57 +33,166 @@ except ImportError:
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CATEGORY_MAP = [
-    ("Entry", lambda o, p: o == "CoreEntry" or o == "Entry" or o == "CurrentEntry" or o == "StructKeywords" or o.startswith("RcsbEntry")),
-    ("Polymer Entity", lambda o, p: (o == "CorePolymerEntity" or o.startswith("RcsbPolymerEntity") or o == "EntityPoly"
-                                     or o == "GeneName" or o.startswith("RcsbEntitySource") or o.startswith("RcsbEntityHost")
-                                     or o == "StructAsym") and "Instance" not in o),
-    ("Polymer Entity Instance", lambda o, p: "PolymerEntityInstance" in o or o == "CorePolymerEntityInstance"
-                                    or o.startswith("RcsbPolymerInstance") or "PolymerInstanceFeature" in o),
-    ("Branched Entity", lambda o, p: o == "CoreBranchedEntity" or "BranchedEntity" in o or o == "PdbxEntityBranch"),
-    ("Nonpolymer Entity", lambda o, p: (o == "CoreNonpolymerEntity" or o.startswith("RcsbNonpolymerEntity")
-                                        or o == "PdbxEntityNonpoly") and "Instance" not in o and "Annotation" not in o),
-    ("Nonpolymer Entity Instance", lambda o, p: "NonpolymerEntityInstance" in o or o.startswith("RcsbNonpolymerInstance")),
-    ("Assembly", lambda o, p: o == "CoreAssembly" or o.startswith("RcsbAssembly") or o.startswith("PdbxStructAssembly")
-                    or o == "PdbxStructOperList" or o == "PdbxStructSpecialSymmetry" or "StructSymmetry" in o),
-    ("Interface", lambda o, p: o == "CoreInterface" or o.startswith("RcsbInterface")),
-    ("Chemical Component", lambda o, p: o == "CoreChemComp" or o == "ChemComp" or o.startswith("RcsbChemComp")
-                              or o.startswith("PdbxChemComp") or o.startswith("PdbxReference")),
-    ("Experimental Data (X-ray)", lambda o, p: o.startswith("Diffrn") or o in ("Cell", "Symmetry")
-                                     or o == "Refine" or o.startswith("Refine") or o == "Reflns"
-                                     or "Reflns" in o or o == "PdbxReflnsTwin"),
-    ("Experimental Data (EM)", lambda o, p: o.startswith("Em") or o.startswith("Em") or "Em" in o[:3]),
-    ("Experimental Data (NMR)", lambda o, p: o.startswith("PdbxNmr")),
-    ("Experimental Data (XFEL)", lambda o, p: o.startswith("PdbxSerialCrystallography") or o.startswith("PdbxSerial")),
-    ("Experimental Data (SAXS)", lambda o, p: o.startswith("PdbxSolnScatter")),
-    ("Validation Report", lambda o, p: o.startswith("PdbxVrpt")),
-    ("Citation", lambda o, p: o == "Citation" or o == "RcsbPrimaryCitation" or o.startswith("RcsbBirdCitation")),
-    ("PubMed Integration", lambda o, p: o == "CorePubmed" or o.startswith("RcsbPubmed") or "Pubmed" in o),
-    ("UniProt Integration", lambda o, p: o == "CoreUniprot" or o.startswith("RcsbUniprot") or "Uniprot" in o or o == "RcsbUniprotAlignments"),
-    ("DrugBank Integration", lambda o, p: o == "CoreDrugbank" or o.startswith("Drugbank") or "Drugbank" in o),
-    ("Pfam Integration", lambda o, p: o == "CorePfam" or o.startswith("RcsbPfam") or "Pfam" in o),
-    ("Target & Ligand Information", lambda o, p: o.startswith("RcsbTarget") or o.startswith("RcsbLigand") or o.startswith("RcsbBinding")
-                                        or "RcsbRelatedTarget" in o),
-    ("Computational Models", lambda o, p: o.startswith("RcsbCompModel") or o.startswith("RcsbMaQaMetric")
-                                or o.startswith("RcsbIhm") or o.startswith("Ihm") or o == "MaData"),
-    ("Audit & Version History", lambda o, p: o.startswith("PdbxAudit") or o.startswith("AuditAuthor")
-                                   or o == "RcsbAccessionInfo" or o == "RcsbLatestRevision"
-                                   or o == "CurrentEntry" or o.startswith("PdbxDatabase")),
-    ("Organism/Source", lambda o, p: o.startswith("EntitySrc") or o.startswith("PdbxEntitySrc")),
-    ("Clusters & Groups", lambda o, p: "ClustersMembers" in o or o.startswith("RcsbCluster") or o.startswith("RcsbGroup")
-                             or o.startswith("Group") or o.startswith("RcsbSchema")),
-    ("Software", lambda o, p: o == "Software" or "PdbxSoftware" in o),
-    ("Database Cross-References", lambda o, p: o.startswith("RcsbExternalReferences") or o == "Database2"
-                                     or o.startswith("PdbxDatabaseRelated")),
-    ("Membrane & Genomic Context", lambda o, p: o.startswith("RcsbMembrane") or o.startswith("RcsbGenomic")),
-    ("Sequence Features", lambda o, p: "RcsbPolymerEntityAlign" in o or "RcsbPolymerEntityGroupSequenceAlignment" in o
-                            or "CoreEntityAlignments" in o or "AlignedRegion" in o or "Alignment" in o
-                            or "RcsbPolymerEntityContainerIdentifiersReferenceSequence" in o),
+    (
+        "Entry",
+        lambda o, _: (
+            o == "CoreEntry"
+            or o == "Entry"
+            or o == "CurrentEntry"
+            or o == "StructKeywords"
+            or o.startswith("RcsbEntry")
+        ),
+    ),
+    (
+        "Polymer Entity",
+        lambda o, _: (
+            (
+                o == "CorePolymerEntity"
+                or o.startswith("RcsbPolymerEntity")
+                or o == "EntityPoly"
+                or o == "GeneName"
+                or o.startswith("RcsbEntitySource")
+                or o.startswith("RcsbEntityHost")
+                or o == "StructAsym"
+            )
+            and "Instance" not in o
+        ),
+    ),
+    (
+        "Polymer Entity Instance",
+        lambda o, _: (
+            "PolymerEntityInstance" in o
+            or o == "CorePolymerEntityInstance"
+            or o.startswith("RcsbPolymerInstance")
+            or "PolymerInstanceFeature" in o
+        ),
+    ),
+    ("Branched Entity", lambda o, _: o == "CoreBranchedEntity" or "BranchedEntity" in o or o == "PdbxEntityBranch"),
+    (
+        "Nonpolymer Entity",
+        lambda o, _: (
+            (o == "CoreNonpolymerEntity" or o.startswith("RcsbNonpolymerEntity") or o == "PdbxEntityNonpoly")
+            and "Instance" not in o
+            and "Annotation" not in o
+        ),
+    ),
+    (
+        "Nonpolymer Entity Instance",
+        lambda o, _: "NonpolymerEntityInstance" in o or o.startswith("RcsbNonpolymerInstance"),
+    ),
+    (
+        "Assembly",
+        lambda o, _: (
+            o == "CoreAssembly"
+            or o.startswith("RcsbAssembly")
+            or o.startswith("PdbxStructAssembly")
+            or o == "PdbxStructOperList"
+            or o == "PdbxStructSpecialSymmetry"
+            or "StructSymmetry" in o
+        ),
+    ),
+    ("Interface", lambda o, _: o == "CoreInterface" or o.startswith("RcsbInterface")),
+    (
+        "Chemical Component",
+        lambda o, _: (
+            o == "CoreChemComp"
+            or o == "ChemComp"
+            or o.startswith("RcsbChemComp")
+            or o.startswith("PdbxChemComp")
+            or o.startswith("PdbxReference")
+        ),
+    ),
+    (
+        "Experimental Data (X-ray)",
+        lambda o, _: (
+            o.startswith("Diffrn")
+            or o in ("Cell", "Symmetry")
+            or o == "Refine"
+            or o.startswith("Refine")
+            or o == "Reflns"
+            or "Reflns" in o
+            or o == "PdbxReflnsTwin"
+        ),
+    ),
+    ("Experimental Data (EM)", lambda o, _: o.startswith("Em") or o.startswith("Em") or "Em" in o[:3]),
+    ("Experimental Data (NMR)", lambda o, _: o.startswith("PdbxNmr")),
+    ("Experimental Data (XFEL)", lambda o, _: o.startswith("PdbxSerialCrystallography") or o.startswith("PdbxSerial")),
+    ("Experimental Data (SAXS)", lambda o, _: o.startswith("PdbxSolnScatter")),
+    ("Validation Report", lambda o, _: o.startswith("PdbxVrpt")),
+    ("Citation", lambda o, _: o == "Citation" or o == "RcsbPrimaryCitation" or o.startswith("RcsbBirdCitation")),
+    ("PubMed Integration", lambda o, _: o == "CorePubmed" or o.startswith("RcsbPubmed") or "Pubmed" in o),
+    (
+        "UniProt Integration",
+        lambda o, _: (
+            o == "CoreUniprot" or o.startswith("RcsbUniprot") or "Uniprot" in o or o == "RcsbUniprotAlignments"
+        ),
+    ),
+    ("DrugBank Integration", lambda o, _: o == "CoreDrugbank" or o.startswith("Drugbank") or "Drugbank" in o),
+    ("Pfam Integration", lambda o, _: o == "CorePfam" or o.startswith("RcsbPfam") or "Pfam" in o),
+    (
+        "Target & Ligand Information",
+        lambda o, _: (
+            o.startswith("RcsbTarget")
+            or o.startswith("RcsbLigand")
+            or o.startswith("RcsbBinding")
+            or "RcsbRelatedTarget" in o
+        ),
+    ),
+    (
+        "Computational Models",
+        lambda o, _: (
+            o.startswith("RcsbCompModel")
+            or o.startswith("RcsbMaQaMetric")
+            or o.startswith("RcsbIhm")
+            or o.startswith("Ihm")
+            or o == "MaData"
+        ),
+    ),
+    (
+        "Audit & Version History",
+        lambda o, _: (
+            o.startswith("PdbxAudit")
+            or o.startswith("AuditAuthor")
+            or o == "RcsbAccessionInfo"
+            or o == "RcsbLatestRevision"
+            or o == "CurrentEntry"
+            or o.startswith("PdbxDatabase")
+        ),
+    ),
+    ("Organism/Source", lambda o, _: o.startswith("EntitySrc") or o.startswith("PdbxEntitySrc")),
+    (
+        "Clusters & Groups",
+        lambda o, _: (
+            "ClustersMembers" in o
+            or o.startswith("RcsbCluster")
+            or o.startswith("RcsbGroup")
+            or o.startswith("Group")
+            or o.startswith("RcsbSchema")
+        ),
+    ),
+    ("Software", lambda o, _: o == "Software" or "PdbxSoftware" in o),
+    (
+        "Database Cross-References",
+        lambda o, _: o.startswith("RcsbExternalReferences") or o == "Database2" or o.startswith("PdbxDatabaseRelated"),
+    ),
+    ("Membrane & Genomic Context", lambda o, _: o.startswith("RcsbMembrane") or o.startswith("RcsbGenomic")),
+    (
+        "Sequence Features",
+        lambda o, _: (
+            "RcsbPolymerEntityAlign" in o
+            or "RcsbPolymerEntityGroupSequenceAlignment" in o
+            or "CoreEntityAlignments" in o
+            or "AlignedRegion" in o
+            or "Alignment" in o
+            or "RcsbPolymerEntityContainerIdentifiersReferenceSequence" in o
+        ),
+    ),
 ]
 
 DEFAULT_CATEGORY = "Other"
 
 
-def resolve_type(type_dict: Dict[str, Any]) -> Tuple[str, str, bool, bool]:
+def resolve_type(type_dict: dict[str, Any]) -> tuple[str, str, bool, bool]:
     """Resolve GraphQL type information: (type_name, kind, nullable, is_list)."""
     kind = type_dict.get("kind", "")
     type_name = type_dict.get("name")
@@ -102,7 +211,7 @@ def resolve_type(type_dict: Dict[str, Any]) -> Tuple[str, str, bool, bool]:
     return type_name or "Unknown", kind, nullable, is_list
 
 
-def get_enum_values(types_list: List[Dict], type_name: str) -> List[str]:
+def get_enum_values(types_list: list[dict], type_name: str) -> list[str]:
     for t in types_list:
         if t.get("name") == type_name and t.get("kind") == "ENUM":
             return [v["name"] for v in t.get("enumValues") or []]
@@ -130,11 +239,11 @@ class SchemaExplorer:
     def __init__(self) -> None:
         self.schema = DataSchema()
         self.raw = self.schema.schema["data"]["__schema"]
-        self.types_list: List[Dict] = self.raw["types"]
+        self.types_list: list[dict] = self.raw["types"]
 
-        self.type_map: Dict[str, Dict] = {}
-        self.object_types: List[Dict] = []
-        self.enum_types: List[Dict] = []
+        self.type_map: dict[str, dict] = {}
+        self.object_types: list[dict] = []
+        self.enum_types: list[dict] = []
         self.scalar_types: set = set()
 
         for t in self.types_list:
@@ -157,25 +266,27 @@ class SchemaExplorer:
 
         self.query_type = self.type_map.get("Query")
 
-    def get_root_fields(self) -> List[Dict]:
+    def get_root_fields(self) -> list[dict]:
         """Return the root query fields (entry, polymer_entities, etc.)."""
         if not self.query_type:
             return []
         root_fields = []
         for f in self.query_type.get("fields") or []:
             ret_type, kind, nullable, is_list = resolve_type(f["type"])
-            root_fields.append({
-                "name": f["name"],
-                "type": ret_type,
-                "kind": kind,
-                "nullable": nullable,
-                "is_list": is_list,
-                "description": f.get("description", "") or "",
-                "args": [{"name": a["name"]} for a in f.get("args") or []],
-            })
+            root_fields.append(
+                {
+                    "name": f["name"],
+                    "type": ret_type,
+                    "kind": kind,
+                    "nullable": nullable,
+                    "is_list": is_list,
+                    "description": f.get("description", "") or "",
+                    "args": [{"name": a["name"]} for a in f.get("args") or []],
+                }
+            )
         return root_fields
 
-    def get_object_fields(self, type_name: str) -> List[Dict]:
+    def get_object_fields(self, type_name: str) -> list[dict]:
         """Return all fields for a given object type."""
         t = self.type_map.get(type_name)
         if not t:
@@ -184,20 +295,22 @@ class SchemaExplorer:
         for f in t.get("fields") or []:
             ret_type, kind, nullable, is_list = resolve_type(f["type"])
             enum_vals = get_enum_values(self.types_list, ret_type)
-            fields.append({
-                "name": f["name"],
-                "type": ret_type,
-                "kind": kind,
-                "nullable": nullable,
-                "is_list": is_list,
-                "description": f.get("description", "") or "",
-                "enum_values": enum_vals,
-            })
+            fields.append(
+                {
+                    "name": f["name"],
+                    "type": ret_type,
+                    "kind": kind,
+                    "nullable": nullable,
+                    "is_list": is_list,
+                    "description": f.get("description", "") or "",
+                    "enum_values": enum_vals,
+                }
+            )
         return fields
 
-    def list_all_fields_grouped_by_type(self) -> Dict[str, List[Dict]]:
+    def list_all_fields_grouped_by_type(self) -> dict[str, list[dict]]:
         """Return a dict mapping each object type to its fields (direct fields only, no nested expansion)."""
-        result: Dict[str, List[Dict]] = {}
+        result: dict[str, list[dict]] = {}
         for t in self.object_types:
             name = t["name"]
             fields = self.get_object_fields(name)
@@ -205,7 +318,7 @@ class SchemaExplorer:
                 result[name] = fields
         return result
 
-    def build_catalog(self) -> List[Dict[str, Any]]:
+    def build_catalog(self) -> list[dict[str, Any]]:
         """Build a flat catalog: each field listed once per containing object type.
 
         This does NOT expand through shared sub-types to avoid combinatorial explosion.
@@ -225,26 +338,28 @@ class SchemaExplorer:
 
             fields = type_fields_map.get(root_type, [])
             for f in fields:
-                catalog.append({
-                    "object_name": root_type,
-                    "object_description": root_obj_desc,
-                    "parent_object": root_name,
-                    "full_path": f"{root_name}.{f['name']}",
-                    "field_name": f["name"],
-                    "gql_type": f["type"],
-                    "kind": f["kind"],
-                    "nullable": f["nullable"],
-                    "is_list": f["is_list"],
-                    "description": f["description"],
-                    "enum_values": f["enum_values"],
-                    "category": find_category(root_type),
-                    "sub_type": "object" if f["type"] in type_fields_map else ("enum" if f["type"] in [e["name"] for e in self.enum_types] else "scalar"),
-                })
+                catalog.append(
+                    {
+                        "object_name": root_type,
+                        "object_description": root_obj_desc,
+                        "parent_object": root_name,
+                        "full_path": f"{root_name}.{f['name']}",
+                        "field_name": f["name"],
+                        "gql_type": f["type"],
+                        "kind": f["kind"],
+                        "nullable": f["nullable"],
+                        "is_list": f["is_list"],
+                        "description": f["description"],
+                        "enum_values": f["enum_values"],
+                        "category": find_category(root_type),
+                        "sub_type": "object"
+                        if f["type"] in type_fields_map
+                        else ("enum" if f["type"] in [e["name"] for e in self.enum_types] else "scalar"),
+                    }
+                )
 
             if not is_builtin_type(root_type) and root_type in type_fields_map:
-                sub_catalog = self._expand_type(
-                    root_type, root_name, type_fields_map, seen_types=set()
-                )
+                sub_catalog = self._expand_type(root_type, root_name, type_fields_map, seen_types=set())
                 catalog.extend(sub_catalog)
 
         return catalog
@@ -253,9 +368,9 @@ class SchemaExplorer:
         self,
         type_name: str,
         parent_path: str,
-        type_fields_map: Dict[str, List[Dict]],
+        type_fields_map: dict[str, list[dict]],
         seen_types: set,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Recursively expand fields of an object type once per parent path.
 
         Each type can appear multiple times in the catalog but only once per
@@ -272,74 +387,78 @@ class SchemaExplorer:
 
         for f in fields:
             full_path = f"{parent_path}.{f['name']}"
-            results.append({
-                "object_name": type_name,
-                "object_description": obj_desc,
-                "parent_object": parent_path.split(".")[-1],
-                "full_path": full_path,
-                "field_name": f["name"],
-                "gql_type": f["type"],
-                "kind": f["kind"],
-                "nullable": f["nullable"],
-                "is_list": f["is_list"],
-                "description": f["description"],
-                "enum_values": f["enum_values"],
-                "category": find_category(type_name),
-                "sub_type": "object" if f["type"] in type_fields_map else ("enum" if f["type"] in [e["name"] for e in self.enum_types] else "scalar"),
-            })
+            results.append(
+                {
+                    "object_name": type_name,
+                    "object_description": obj_desc,
+                    "parent_object": parent_path.split(".")[-1],
+                    "full_path": full_path,
+                    "field_name": f["name"],
+                    "gql_type": f["type"],
+                    "kind": f["kind"],
+                    "nullable": f["nullable"],
+                    "is_list": f["is_list"],
+                    "description": f["description"],
+                    "enum_values": f["enum_values"],
+                    "category": find_category(type_name),
+                    "sub_type": "object"
+                    if f["type"] in type_fields_map
+                    else ("enum" if f["type"] in [e["name"] for e in self.enum_types] else "scalar"),
+                }
+            )
 
             if not is_builtin_type(f["type"]) and f["type"] in type_fields_map:
-                sub = self._expand_type(
-                    f["type"], full_path, type_fields_map, seen_types.copy()
-                )
+                sub = self._expand_type(f["type"], full_path, type_fields_map, seen_types.copy())
                 results.extend(sub)
 
         return results
 
-    def search(self, query: str) -> List[Dict[str, Any]]:
+    def search(self, query: str) -> list[dict[str, Any]]:
         """Search the catalog for matching field names, object names, descriptions, or paths."""
         types_map = self.list_all_fields_grouped_by_type()
         flattened = []
         for type_name, fields in types_map.items():
             obj_desc = self.type_map.get(type_name, {}).get("description", "") or ""
             for f in fields:
-                flattened.append({
-                    "object_name": type_name,
-                    "object_description": obj_desc,
-                    "field_name": f["name"],
-                    "full_path": f"{type_name}.{f['name']}",
-                    "gql_type": f["type"],
-                    "nullable": f["nullable"],
-                    "is_list": f["is_list"],
-                    "description": f["description"],
-                    "enum_values": f["enum_values"],
-                    "category": find_category(type_name),
-                })
+                flattened.append(
+                    {
+                        "object_name": type_name,
+                        "object_description": obj_desc,
+                        "field_name": f["name"],
+                        "full_path": f"{type_name}.{f['name']}",
+                        "gql_type": f["type"],
+                        "nullable": f["nullable"],
+                        "is_list": f["is_list"],
+                        "description": f["description"],
+                        "enum_values": f["enum_values"],
+                        "category": find_category(type_name),
+                    }
+                )
 
         q = query.lower()
         results = []
         for rec in flattened:
-            if (q in rec["object_name"].lower()
-                    or q in rec["field_name"].lower()
-                    or q in (rec["description"] or "").lower()
-                    or q in rec["full_path"].lower()):
+            if (
+                q in rec["object_name"].lower()
+                or q in rec["field_name"].lower()
+                or q in (rec["description"] or "").lower()
+                or q in rec["full_path"].lower()
+            ):
                 results.append(rec)
         return results
 
-    def get_statistics(self) -> Dict[str, Any]:
+    def get_statistics(self) -> dict[str, Any]:
         """Compute summary statistics about the schema."""
         type_fields_map = self.list_all_fields_grouped_by_type()
 
         total_fields = sum(len(fields) for fields in type_fields_map.values())
 
-        object_field_counts: Dict[str, int] = {
-            name: len(fields) for name, fields in type_fields_map.items()
-        }
+        object_field_counts: dict[str, int] = {name: len(fields) for name, fields in type_fields_map.items()}
 
         total_scalar = 0
         total_enum_fields = 0
         total_object_fields = 0
-        for name, fields in type_fields_map.items():
+        for _name, fields in type_fields_map.items():
             for f in fields:
                 if is_builtin_type(f["type"]):
                     total_scalar += 1
@@ -348,10 +467,10 @@ class SchemaExplorer:
                 elif f["type"] in type_fields_map:
                     total_object_fields += 1
 
-        largest_obj = max(object_field_counts, key=object_field_counts.get)
+        largest_obj = max(object_field_counts, key=lambda k: object_field_counts[k])
         largest_obj_count = object_field_counts[largest_obj]
 
-        categories: Dict[str, int] = defaultdict(int)
+        categories: dict[str, int] = defaultdict(int)
         for name in type_fields_map:
             cat = find_category(name)
             categories[cat] += len(type_fields_map[name])
@@ -371,8 +490,9 @@ class SchemaExplorer:
             "object_field_counts": {k: v for k, v in sorted(object_field_counts.items(), key=lambda x: -x[1])},
         }
 
-    def _compute_max_nesting(self, type_fields_map: Dict[str, List[Dict]]) -> int:
+    def _compute_max_nesting(self, type_fields_map: dict[str, list[dict]]) -> int:
         """Determine deepest nesting level by tracing object references."""
+
         def depth(type_name: str, visited: set) -> int:
             if type_name in visited or type_name not in type_fields_map:
                 return 0
@@ -390,14 +510,20 @@ class SchemaExplorer:
             max_nest = max(max_nest, d)
         return max_nest
 
-    def get_cross_reference_data(self) -> Dict[str, List[Dict]]:
+    def get_cross_reference_data(self) -> dict[str, list[dict]]:
         """Find fields related to cross-reference databases."""
-        topics: Dict[str, List[str]] = {
+        topics: dict[str, list[str]] = {
             "UniProt": ["uniprot", "uni_prot", "uniprotkb", "uniprot_primary", "uniprot_id"],
             "DrugBank": ["drugbank", "drug_bank", "drugbank_id"],
             "PubMed": ["pubmed", "pubmed_id", "pmid", "pmc"],
             "GO (Gene Ontology)": ["go_", "gene_ontology", "go_id", "go_term", "go_aspect", "go_evidence"],
-            "EC (Enzyme Classification)": ["ec_", "enzyme_class", "enzyme_commission", "ec_number", "rcsb_enzyme_class"],
+            "EC (Enzyme Classification)": [
+                "ec_",
+                "enzyme_class",
+                "enzyme_commission",
+                "ec_number",
+                "rcsb_enzyme_class",
+            ],
             "Pfam": ["pfam", "pfam_id", "pfam_acc", "pfam_classification"],
             "SCOP": ["scop", "scop_id", "scop_classification", "scopedb"],
             "CATH": ["cath", "cath_id", "cath_classification", "cathdb"],
@@ -407,13 +533,41 @@ class SchemaExplorer:
             "Residues": ["residue", "resid", "res_name", "comp_id", "monomer", "auth_comp_id", "mon_id"],
             "Chains": ["chain", "asym_id", "auth_asym_id", "polymer_entity_instance", "struct_asym", "pdbx_strand_id"],
             "Assemblies": ["assembly", "assemblies", "oligomeric", "oligomeric_state", "pdbx_struct_assembly"],
-            "Organisms": ["organism", "organism_name", "organism_scientific", "source_organism", "host_organism", "taxonomy", "tax_id", "ncbi"],
-            "Sequence Features": ["sequence", "seq_one_letter", "seq_", "entity_poly", "poly_seq", "alignment", "aligned_region", "sequence_identity", "seq_length"],
+            "Organisms": [
+                "organism",
+                "organism_name",
+                "organism_scientific",
+                "source_organism",
+                "host_organism",
+                "taxonomy",
+                "tax_id",
+                "ncbi",
+            ],
+            "Sequence Features": [
+                "sequence",
+                "seq_one_letter",
+                "seq_",
+                "entity_poly",
+                "poly_seq",
+                "alignment",
+                "aligned_region",
+                "sequence_identity",
+                "seq_length",
+            ],
             "Membrane Proteins": ["membrane", "transmembrane", "membrane_lineage"],
             "Genomic": ["genomic", "genome", "gene_name", "genomic_lineage", "gene"],
             "Keywords": ["keyword", "keywords"],
             "DOI / Citation": ["doi", "citation", "journal", "journal_abbrev"],
-            "Validation Metrics": ["validation", "clashscore", "clash_score", "rama", "ramachandran", "rmsd", "rms", "molprobity"],
+            "Validation Metrics": [
+                "validation",
+                "clashscore",
+                "clash_score",
+                "rama",
+                "ramachandran",
+                "rmsd",
+                "rms",
+                "molprobity",
+            ],
             "Symmetry": ["symmetry", "space_group", "crystal"],
         }
 
@@ -421,18 +575,20 @@ class SchemaExplorer:
         all_fields = []
         for type_name, fields in types_map.items():
             for f in fields:
-                all_fields.append({
-                    "object_name": type_name,
-                    "field_name": f["name"],
-                    "full_path": f"{type_name}.{f['name']}",
-                    "gql_type": f["type"],
-                    "nullable": f["nullable"],
-                    "is_list": f["is_list"],
-                    "description": f["description"],
-                    "category": find_category(type_name),
-                })
+                all_fields.append(
+                    {
+                        "object_name": type_name,
+                        "field_name": f["name"],
+                        "full_path": f"{type_name}.{f['name']}",
+                        "gql_type": f["type"],
+                        "nullable": f["nullable"],
+                        "is_list": f["is_list"],
+                        "description": f["description"],
+                        "category": find_category(type_name),
+                    }
+                )
 
-        results: Dict[str, List[Dict]] = {}
+        results: dict[str, list[dict]] = {}
         for topic, patterns in topics.items():
             matches = []
             for rec in all_fields:
@@ -447,19 +603,30 @@ class SchemaExplorer:
 
 # ─── Export Functions ─────────────────────────────────────────────────
 
-def export_json(catalog: List[Dict[str, Any]], filepath: str) -> None:
+
+def export_json(catalog: list[dict[str, Any]], filepath: str) -> None:
     with open(filepath, "w") as f:
         json.dump(catalog, f, indent=2, default=str)
     print(f"  Wrote {filepath} ({len(catalog)} records)")
 
 
-def export_csv(catalog: List[Dict[str, Any]], filepath: str) -> None:
+def export_csv(catalog: list[dict[str, Any]], filepath: str) -> None:
     if not catalog:
         return
     fieldnames = [
-        "object_name", "object_description", "parent_object", "full_path",
-        "field_name", "gql_type", "kind", "nullable", "is_list",
-        "description", "enum_values", "category", "sub_type",
+        "object_name",
+        "object_description",
+        "parent_object",
+        "full_path",
+        "field_name",
+        "gql_type",
+        "kind",
+        "nullable",
+        "is_list",
+        "description",
+        "enum_values",
+        "category",
+        "sub_type",
     ]
     with open(filepath, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -472,8 +639,8 @@ def export_csv(catalog: List[Dict[str, Any]], filepath: str) -> None:
     print(f"  Wrote {filepath} ({len(catalog)} records)")
 
 
-def export_markdown(catalog: List[Dict[str, Any]], filepath: str, stats: Dict[str, Any]) -> None:
-    type_fields: Dict[str, List[Dict]] = defaultdict(list)
+def export_markdown(catalog: list[dict[str, Any]], filepath: str, stats: dict[str, Any]) -> None:
+    type_fields: dict[str, list[dict]] = defaultdict(list)
     for r in catalog:
         type_fields[r["object_name"]].append(r)
 
@@ -497,26 +664,26 @@ def export_markdown(catalog: List[Dict[str, Any]], filepath: str, stats: Dict[st
         lines.append(f"**Category:** {cat}  \n" if cat != DEFAULT_CATEGORY else "")
         lines.append("| Field | Type | Nullable | List | Description |\n")
         lines.append("|-------|------|----------|------|-------------|\n")
-        for f in fields:
-            null_s = "Yes" if f["nullable"] else "No"
-            list_s = "Yes" if f["is_list"] else "No"
-            desc = (f["description"] or "").replace("\n", " ").replace("|", "\\|")[:120]
+        for fd in fields:
+            null_s = "Yes" if fd["nullable"] else "No"
+            list_s = "Yes" if fd["is_list"] else "No"
+            desc = (fd["description"] or "").replace("\n", " ").replace("|", "\\|")[:120]
             enum_s = ""
-            if f["enum_values"]:
-                enum_s = "(" + ", ".join(f["enum_values"][:5]) + ")"
-                if len(f["enum_values"]) > 5:
+            if fd["enum_values"]:
+                enum_s = "(" + ", ".join(fd["enum_values"][:5]) + ")"
+                if len(fd["enum_values"]) > 5:
                     enum_s += "..."
-            gtype = f["gql_type"]
+            gtype = fd["gql_type"]
             if enum_s:
                 gtype = f"ENUM {enum_s}"
-            lines.append(f"| `{f['field_name']}` | {gtype} | {null_s} | {list_s} | {desc} |\n")
+            lines.append(f"| `{fd['field_name']}` | {gtype} | {null_s} | {list_s} | {desc} |\n")
 
-    with open(filepath, "w") as f:
-        f.writelines(lines)
+    with open(filepath, "w") as fh:
+        fh.writelines(lines)
     print(f"  Wrote {filepath}")
 
 
-def export_xlsx(catalog: List[Dict[str, Any]], filepath: str) -> None:
+def export_xlsx(catalog: list[dict[str, Any]], filepath: str) -> None:
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill
@@ -558,12 +725,12 @@ def export_xlsx(catalog: List[Dict[str, Any]], filepath: str) -> None:
                 val = "; ".join(val)
             ws.cell(row=ri, column=ci, value=val)
 
-    ws.auto_filter.ref = f"A1:{chr(64+len(fieldnames))}{len(catalog)+1}"
+    ws.auto_filter.ref = f"A1:{chr(64 + len(fieldnames))}{len(catalog) + 1}"
     wb.save(filepath)
     print(f"  Wrote {filepath} ({len(catalog)} records)")
 
 
-def export_statistics(stats: Dict[str, Any], filepath: str) -> None:
+def export_statistics(stats: dict[str, Any], filepath: str) -> None:
     lines = [
         "# RCSB PDB Schema Statistics\n",
         f"_Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n",
@@ -583,18 +750,22 @@ def export_statistics(stats: Dict[str, Any], filepath: str) -> None:
     for obj_name, count in stats["object_field_counts"].items():
         lines.append(f"| `{obj_name}` | {count} |\n")
 
-    lines.extend([
-        "\n## Fields by Category\n\n",
-        "| Category | Fields |\n",
-        "|----------|-------:|\n",
-    ])
+    lines.extend(
+        [
+            "\n## Fields by Category\n\n",
+            "| Category | Fields |\n",
+            "|----------|-------:|\n",
+        ]
+    )
     for cat, count in sorted(stats["categories"].items(), key=lambda x: -x[1]):
         lines.append(f"| {cat} | {count} |\n")
 
-    lines.extend([
-        "\n## All Object Names\n",
-        f"*{len(stats['object_names'])} object types*\n",
-    ])
+    lines.extend(
+        [
+            "\n## All Object Names\n",
+            f"*{len(stats['object_names'])} object types*\n",
+        ]
+    )
     for name in stats["object_names"]:
         lines.append(f"- `{name}`\n")
 
@@ -603,7 +774,7 @@ def export_statistics(stats: Dict[str, Any], filepath: str) -> None:
     print(f"  Wrote {filepath}")
 
 
-def export_cross_reference_md(results: Dict[str, List[Dict]], filepath: str) -> None:
+def export_cross_reference_md(results: dict[str, list[dict]], filepath: str) -> None:
     all_count = sum(len(v) for v in results.values())
     lines = [
         "# Cross-Reference Report\n",
@@ -615,14 +786,18 @@ def export_cross_reference_md(results: Dict[str, List[Dict]], filepath: str) -> 
 
     for topic in sorted(results.keys()):
         matches = sorted(results[topic], key=lambda x: x["full_path"])
-        lines.extend([
-            f"\n## {topic} ({len(matches)} fields)\n\n",
-            "| Full Path | Field | Object | Type | Description |\n",
-            "|-----------|-------|--------|------|-------------|\n",
-        ])
+        lines.extend(
+            [
+                f"\n## {topic} ({len(matches)} fields)\n\n",
+                "| Full Path | Field | Object | Type | Description |\n",
+                "|-----------|-------|--------|------|-------------|\n",
+            ]
+        )
         for rec in matches:
             desc = (rec["description"] or "").replace("\n", " ")[:100]
-            lines.append(f"| `{rec['full_path']}` | `{rec['field_name']}` | {rec['object_name']} | {rec['gql_type']} | {desc} |\n")
+            lines.append(
+                f"| `{rec['full_path']}` | `{rec['field_name']}` | {rec['object_name']} | {rec['gql_type']} | {desc} |\n"
+            )
 
     with open(filepath, "w") as f:
         f.writelines(lines)
@@ -641,7 +816,7 @@ def export_hierarchy_md(explorer: SchemaExplorer, filepath: str) -> None:
         "Object reference fields show the nested type name in brackets.\n",
     ]
 
-    root_to_type = {}
+    root_to_type: dict[str, list[str]] = {}
     for rf in root_fields:
         root_to_type[rf["type"]] = root_to_type.get(rf["type"], []) + [rf["name"]]
 
@@ -655,32 +830,32 @@ def export_hierarchy_md(explorer: SchemaExplorer, filepath: str) -> None:
             lines.append(f"\n## {type_name}\n")
 
         lines.append("```text\n")
-        for f in fields:
-            gtype = f["type"]
-            if f["enum_values"]:
+        for fd in fields:
+            gtype = fd["type"]
+            if fd["enum_values"]:
                 gtype = "ENUM"
-            null_flag = "?" if f["nullable"] else ""
-            list_flag = "[]" if f["is_list"] else ""
+            null_flag = "?" if fd["nullable"] else ""
+            list_flag = "[]" if fd["is_list"] else ""
             dtype = f"{gtype}{list_flag}{null_flag}"
-            desc = (f["description"] or "").replace("\n", " ").strip()[:120]
+            desc = (fd["description"] or "").replace("\n", " ").strip()[:120]
             if desc:
-                lines.append(f"  ├── {f['name']} : {dtype}  # {desc}\n")
+                lines.append(f"  ├── {fd['name']} : {dtype}  # {desc}\n")
             else:
-                lines.append(f"  ├── {f['name']} : {dtype}\n")
+                lines.append(f"  ├── {fd['name']} : {dtype}\n")
         lines.append("```\n")
 
-    with open(filepath, "w") as f:
-        f.writelines(lines)
+    with open(filepath, "w") as fh:
+        fh.writelines(lines)
     print(f"  Wrote {filepath}")
 
 
-def print_search_results(results: List[Dict], query: str) -> None:
+def print_search_results(results: list[dict], query: str) -> None:
     print(f"\n=== Search results for '{query}': {len(results)} fields ===\n")
     if not results:
         print("  No results found.\n")
         return
     print(f"{'Object':<30} {'Field':<30} {'Type':<20} {'Description'}")
-    print(f"{'-'*30} {'-'*30} {'-'*20} {'-'*60}")
+    print(f"{'-' * 30} {'-' * 30} {'-' * 20} {'-' * 60}")
     for r in results[:60]:
         desc = (r["description"] or "")[:60]
         print(f"{r['object_name']:<30} {r['field_name']:<30} {r['gql_type']:<20} {desc}")
@@ -689,6 +864,7 @@ def print_search_results(results: List[Dict], query: str) -> None:
 
 
 # ─── CLI ──────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(

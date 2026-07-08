@@ -5,28 +5,20 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any
 
 import pandas as pd
 import typer
-import yaml
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from rcsb_pipeline.cache import ResponseCache
-from rcsb_pipeline.config import RcsbPipelineConfig, load_preset
-from rcsb_pipeline.discovery import (
-    discover_pdb_ids,
-    resolve_gene_symbols,
-    save_discovery_results,
-)
-from rcsb_pipeline.export import export_dataset, generate_all_reports
-from rcsb_pipeline.fetch import fetch_entry_data, fetch_uniprot_data, save_raw_data
+from rcsb_pipeline.column_registry import ColumnRegistry
+from rcsb_pipeline.config import RcsbPipelineConfig
+from rcsb_pipeline.pipeline import PipelineOrchestrator
+from rcsb_pipeline.registry import ProcessedRegistry
 from rcsb_pipeline.schema_loader import SchemaLoader
-from rcsb_pipeline.transform import compute_binding_site_count, sanitize
 
 app = typer.Typer(
     name="rcsb-pipeline",
@@ -41,6 +33,7 @@ pipeline:
   cache_dir: ~/.cache/rcsb-pipeline
   log_dir: ./logs
   checkpoint: ./checkpoint.json
+  registry_db: ~/.cache/rcsb-pipeline-registry.db
   max_concurrent: 5
   rate_limit: 0.3
   batch_size: 50
@@ -60,6 +53,8 @@ discovery:
   exclude_deprecated: true
 fields:
   preset: standard
+  columns: []
+  column_file: null
   include: []
   exclude: []
   custom_config: null
@@ -94,113 +89,41 @@ def _setup_logging(log_dir: str, verbose: bool, quiet: bool) -> None:
         logger.addHandler(ch)
 
 
-def _save_checkpoint(path: str, stage: str, data: dict) -> None:
-    cp = {"stage": stage, "timestamp": datetime.now(timezone.utc).isoformat(), **data}
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(cp, f, indent=2, default=str)
-    logger.info("Checkpoint saved: stage=%s path=%s", stage, path)
-
-
-def _load_checkpoint(path: str) -> Optional[dict]:
-    p = Path(path)
-    if p.exists():
-        with open(p) as f:
-            return json.load(f)
-    return None
-
-
-def _log_discovery(uniprot_to_pdbs: dict, log_dir: str) -> None:
-    path = Path(log_dir) / "discovery.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as f:
-        for uid, pdbs in uniprot_to_pdbs.items():
-            f.write(json.dumps({"uniprot_id": uid, "pdb_ids": pdbs, "count": len(pdbs), "timestamp": datetime.now(timezone.utc).isoformat()}) + "\n")
-    logger.info("Discovery log: %s (%d entries)", path, len(uniprot_to_pdbs))
-
-
-def _log_fetch(batch_size: int, pdb_count: int, duration: float, log_dir: str) -> None:
-    path = Path(log_dir) / "fetch.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as f:
-        f.write(json.dumps({
-            "batch_size": batch_size, "pdb_count": pdb_count,
-            "duration_seconds": round(duration, 2),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }) + "\n")
-
-
-def _resolve_uniprots(
-    cfg: RcsbPipelineConfig, cache: ResponseCache, progress: Progress
-) -> List[str]:
-    """Resolve all input sources to a flat list of UniProt IDs."""
-    uniprots: List[str] = []
-
-    uniprots.extend(cfg.input.uniprots)
-
-    if cfg.input.uniprot_file:
-        path = Path(cfg.input.uniprot_file)
-        if path.exists():
-            with open(path) as f:
-                for line in f:
-                    uid = line.strip()
-                    if uid and not uid.startswith("#"):
-                        uniprots.append(uid)
-
-    if cfg.input.gene_symbols or cfg.input.gene_symbol_file:
-        symbols: List[str] = list(cfg.input.gene_symbols)
-        if cfg.input.gene_symbol_file:
-            spath = Path(cfg.input.gene_symbol_file)
-            if spath.exists():
-                with open(spath) as f:
-                    for line in f:
-                        s = line.strip()
-                        if s and not s.startswith("#"):
-                            symbols.append(s)
-
-        if symbols:
-            task = progress.add_task("[cyan]Resolving gene symbols...", total=len(symbols))
-            resolved = resolve_gene_symbols(symbols, cache)
-            for sym, uid in resolved.items():
-                if uid:
-                    uniprots.append(uid)
-                else:
-                    console.print(f"  [yellow]Could not resolve gene symbol: {sym}")
-            progress.remove_task(task)
-
-    return list(dict.fromkeys(uniprots))
+# ── Main pipeline command ──
 
 
 @app.command()
 def run(
-    ctx: typer.Context,
-    uniprots: Optional[str] = typer.Option(None, help="Comma-separated UniProt IDs"),
-    uniprot_file: Optional[str] = typer.Option(None, help="File with one UniProt per line"),
-    pdb_ids: Optional[str] = typer.Option(None, help="Comma-separated PDB IDs (skip discovery)"),
-    gene_symbols: Optional[str] = typer.Option(None, help="Comma-separated gene symbols"),
-    gene_symbol_file: Optional[str] = typer.Option(None, help="File with one gene symbol per line"),
+    uniprots: str | None = typer.Option(None, help="Comma-separated UniProt IDs"),
+    uniprot_file: str | None = typer.Option(None, help="File with one UniProt per line"),
+    pdb_ids: str | None = typer.Option(None, help="Comma-separated PDB IDs (skip discovery)"),
+    gene_symbols: str | None = typer.Option(None, help="Comma-separated gene symbols"),
+    gene_symbol_file: str | None = typer.Option(None, help="File with one gene symbol per line"),
     preset: str = typer.Option("standard", help="Field preset: minimal, standard, full, custom"),
-    fields: Optional[str] = typer.Option(None, help="Path to custom field config YAML"),
+    columns: str | None = typer.Option(None, help="Comma-separated column short names"),
+    column_file: str | None = typer.Option(None, help="Path to custom column YAML file"),
+    fields: str | None = typer.Option(None, help="Path to custom field config YAML"),
     granularity: str = typer.Option("per-structure", help="Output granularity"),
-    format: Optional[List[str]] = typer.Option(None, "-f", "--format", help="Output format(s)"),
+    format: list[str] | None = typer.Option(None, "-f", "--format", help="Output format(s)"),  # noqa: B008
     output: str = typer.Option("./rcsb_output", help="Output directory"),
     dedup_strategy: str = typer.Option("strict", help="Deduplication strategy"),
-    dedup_keys: Optional[str] = typer.Option(None, help="Comma-separated dedup keys"),
+    dedup_keys: str | None = typer.Option(None, help="Comma-separated dedup keys"),
     missing_action: str = typer.Option("fill-null", help="Missing value strategy"),
     aggregation: str = typer.Option("pick-best", help="Aggregation mode"),
     aggregation_key: str = typer.Option("resolution_combined", help="Sort key for aggregation"),
     max_entries: int = typer.Option(1000, help="Max PDB entries"),
     min_resolution: float = typer.Option(0.0, help="Min resolution filter"),
     max_resolution: float = typer.Option(10.0, help="Max resolution filter"),
-    methods: Optional[str] = typer.Option(None, help="Comma-separated experimental methods"),
+    methods: str | None = typer.Option(None, help="Comma-separated experimental methods"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress all output except errors"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass cache"),
-    resume: Optional[str] = typer.Option(None, help="Resume from checkpoint file"),
-    config: Optional[str] = typer.Option(None, help="Path to YAML config file"),
+    resume: str | None = typer.Option(None, help="Resume from checkpoint file"),
+    skip_registered: bool = typer.Option(False, "--skip-registered", help="Skip entries already in registry"),
+    config: str | None = typer.Option(None, help="Path to YAML config file"),
 ) -> None:
-    """Run the full pipeline: discover → fetch → transform → export."""
-    # ── Load config ──
+    """Run the full pipeline: discover -> fetch -> transform -> export."""
+    # Build config from CLI args
     cfg = RcsbPipelineConfig()
     if config:
         cfg = RcsbPipelineConfig.from_yaml(config)
@@ -219,6 +142,10 @@ def run(
         cfg.fields.preset = preset
     if fields:
         cfg.fields.custom_config = fields
+    if columns:
+        cfg.fields.columns = [c.strip() for c in columns.split(",") if c.strip()]
+    if column_file:
+        cfg.fields.column_file = column_file
     if granularity:
         cfg.output.granularity = granularity
     if format:
@@ -244,273 +171,38 @@ def run(
     if methods:
         cfg.discovery.experimental_methods = [m.strip() for m in methods.split(",")]
 
-    cfg.resolve_paths()
-
     _setup_logging(cfg.pipeline.log_dir, verbose, quiet)
-    logger.info("Pipeline run started — config: %s", cfg.pipeline.cache_dir)
+    logger.info("Pipeline run started")
 
-    output_dir = cfg.output.directory
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    cfg.to_yaml(str(Path(output_dir) / "run_config.yaml"))
-
-    cache = ResponseCache(cfg.pipeline.cache_dir)
-    if no_cache:
-        cache.clear()
-
-    # Check for resume
-    checkpoint_data: Optional[dict] = None
     if resume:
-        checkpoint_data = _load_checkpoint(resume)
-        if checkpoint_data:
-            logger.info("Resuming from checkpoint: stage=%s", checkpoint_data.get("stage"))
-            console.print(f"[yellow]Resuming from checkpoint: stage={checkpoint_data.get('stage')}[/yellow]")
+        cfg.pipeline.checkpoint = resume
 
-    console.print("[bold green]RCSB PDB Pipeline[/bold green]")
-    console.print(f"  Output: {output_dir}")
-    console.print(f"  Preset: {cfg.fields.preset}")
-    console.print(f"  Granularity: {cfg.output.granularity}")
-    console.print()
+    orchestrator = PipelineOrchestrator(cfg)
+    try:
+        orchestrator.run(
+            skip_registered=skip_registered,
+            no_cache=no_cache,
+            columns=columns,
+        )
+    finally:
+        orchestrator.close()
 
-    all_uniprots: List[str] = []
-    all_pdb_ids: List[str] = list(cfg.input.pdb_ids)
-    uniprot_to_pdbs: dict = {}
 
-    # Load previous state from checkpoint if resuming
-    if checkpoint_data:
-        all_uniprots = checkpoint_data.get("all_uniprots", [])
-        all_pdb_ids = checkpoint_data.get("all_pdb_ids", [])
-        uniprot_to_pdbs = checkpoint_data.get("uniprot_to_pdbs", {})
-
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
-        # ── Resolve inputs ──
-        if not checkpoint_data:
-            all_uniprots = _resolve_uniprots(cfg, cache, progress)
-        if not all_uniprots and not all_pdb_ids:
-            console.print("[red]No input provided. Use --uniprots, --uniprot-file, --pdb-ids, or --gene-symbols[/red]")
-            raise typer.Exit(1)
-
-        console.print(f"\n[bold]Input:[/bold] {len(all_uniprots)} UniProt IDs, {len(all_pdb_ids)} direct PDB IDs")
-        logger.info("Input resolved: %d UniProts, %d PDB IDs", len(all_uniprots), len(all_pdb_ids))
-
-        # ── Step 1: Discovery ──
-        stage_discovery_done = checkpoint_data and checkpoint_data.get("stage") in ("discovery", "fetch", "transform", "export")
-        if not all_pdb_ids and all_uniprots and not stage_discovery_done:
-            console.print("\n[bold]Step 1: Discovery[/bold] — Finding PDB entries for UniProts...")
-            uniprot_to_pdbs, raw_discovery = discover_pdb_ids(
-                uniprot_ids=all_uniprots,
-                cache=cache,
-                max_entries=cfg.discovery.max_entries,
-                min_resolution=cfg.discovery.min_resolution,
-                max_resolution=cfg.discovery.max_resolution,
-                experimental_methods=cfg.discovery.experimental_methods or None,
-                exclude_deprecated=cfg.discovery.exclude_deprecated,
-                progress=progress,
-            )
-            discovered_pdbs = set()
-            for ids in uniprot_to_pdbs.values():
-                discovered_pdbs.update(ids)
-            all_pdb_ids = sorted(discovered_pdbs)
-            save_discovery_results(uniprot_to_pdbs, output_dir)
-            _log_discovery(uniprot_to_pdbs, cfg.pipeline.log_dir)
-            console.print(f"  Found {len(all_pdb_ids)} unique PDB entries for {len(all_uniprots)} UniProts")
-            logger.info("Discovery complete: %d PDB entries for %d UniProts", len(all_pdb_ids), len(all_uniprots))
-            _save_checkpoint(cfg.pipeline.checkpoint, "discovery", {
-                "all_uniprots": all_uniprots,
-                "all_pdb_ids": all_pdb_ids,
-                "uniprot_to_pdbs": {k: v for k, v in uniprot_to_pdbs.items()},
-            })
-
-        if not all_pdb_ids:
-            console.print("[red]No PDB entries found for the given inputs[/red]")
-            raise typer.Exit(1)
-
-        # ── Step 2: Resolve field paths ──
-        field_cfg = load_preset(cfg.fields.preset)
-        if cfg.fields.custom_config:
-            with open(cfg.fields.custom_config) as f:
-                custom = yaml.safe_load(f)
-                field_cfg.include = custom.get("include", [])
-
-        entry_field_paths = [p for p in field_cfg.include if p.startswith("entry.")]
-        uniprot_field_paths = [p for p in field_cfg.include if p.startswith("uniprot.")]
-
-        if cfg.fields.preset == "full":
-            loader = SchemaLoader()
-            all_paths = []
-            for type_name in loader.list_object_types():
-                for f in loader.get_fields_for_type(type_name):
-                    all_paths.append(f"{type_name}.{f['name']}")
-            entry_field_paths = [p for p in all_paths if p.startswith("entry.")]
-            uniprot_field_paths = [p for p in all_paths if p.startswith("uniprot.")]
-
-        logger.info("Field paths: %d entry, %d uniprot", len(entry_field_paths), len(uniprot_field_paths))
-
-        # ── Step 3: Fetch entry data ──
-        stage_fetch_done = checkpoint_data and checkpoint_data.get("stage") in ("fetch", "transform", "export")
-        entry_data: dict = {}
-        if not stage_fetch_done:
-            console.print(f"\n[bold]Step 2: Fetch[/bold] — Fetching {len(all_pdb_ids)} PDB entries...")
-            if entry_field_paths:
-                t0 = datetime.now(timezone.utc)
-                entry_data = fetch_entry_data(
-                    pdb_ids=all_pdb_ids,
-                    field_paths=entry_field_paths[:50],
-                    cache=cache,
-                    max_concurrent=cfg.pipeline.max_concurrent,
-                    rate_limit=cfg.pipeline.rate_limit,
-                    retry_max=cfg.pipeline.retry_max,
-                    progress=progress,
-                )
-                duration = (datetime.now(timezone.utc) - t0).total_seconds()
-                _log_fetch(len(all_pdb_ids), len(entry_data), duration, cfg.pipeline.log_dir)
-                logger.info("Fetch complete: %d entries in %.1fs", len(entry_data), duration)
-            _save_checkpoint(cfg.pipeline.checkpoint, "fetch", {
-                "all_uniprots": all_uniprots,
-                "all_pdb_ids": all_pdb_ids,
-                "uniprot_to_pdbs": {k: v for k, v in uniprot_to_pdbs.items()},
-            })
-        else:
-            entry_data = {}
-
-        # ── Step 4: Fetch UniProt data ──
-        uniprot_data: dict = {}
-        if not stage_fetch_done and uniprot_field_paths and all_uniprots:
-            console.print(f"\n[bold]Step 3: UniProt Enhancement[/bold] — Fetching {len(all_uniprots)} UniProts...")
-            t0 = datetime.now(timezone.utc)
-            uniprot_data = fetch_uniprot_data(
-                uniprot_ids=all_uniprots,
-                field_paths=uniprot_field_paths[:50],
-                cache=cache,
-                max_concurrent=cfg.pipeline.max_concurrent,
-                rate_limit=cfg.pipeline.rate_limit,
-                progress=progress,
-            )
-            duration = (datetime.now(timezone.utc) - t0).total_seconds()
-            logger.info("UniProt fetch complete: %d entries in %.1fs", len(uniprot_data), duration)
-
-        save_raw_data(entry_data, uniprot_data, output_dir)
-
-    # ── Step 5: Transform ──
-    console.print("\n[bold]Step 4: Transform[/bold] — Building and sanitizing dataset...")
-    logger.info("Starting transform — %d rows to build", len(all_uniprots) * max(len(all_pdb_ids), 1))
-
-    rows = []
-    for uid in all_uniprots:
-        pdb_list = uniprot_to_pdbs.get(uid, all_pdb_ids if not uniprot_to_pdbs else [])
-        if not pdb_list:
-            pdb_list = [""]
-        for pdb_id in pdb_list:
-            row: dict = {
-                "uniprot_id": uid,
-                "pdb_id": pdb_id,
-                "structure_available": bool(pdb_id),
-            }
-            entry = entry_data.get(pdb_id, {})
-            if isinstance(entry, dict):
-                for path in entry_field_paths:
-                    parts = path.split(".")
-                    val = entry
-                    for p in parts[1:]:
-                        if isinstance(val, dict):
-                            val = val.get(p)
-                        else:
-                            val = None
-                            break
-                    col_name = "_".join(parts[1:]) if len(parts) > 1 else path
-                    if val is not None:
-                        row[col_name] = val
-
-            up = uniprot_data.get(uid, {})
-            if isinstance(up, dict):
-                for path in uniprot_field_paths:
-                    parts = path.split(".")
-                    val = up
-                    for p in parts[1:]:
-                        if isinstance(val, dict):
-                            val = val.get(p)
-                        else:
-                            val = None
-                            break
-                    col_name = "_".join(parts[1:]) if len(parts) > 1 else path
-                    if val is not None:
-                        row[col_name] = val
-
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-    logger.info("Raw DataFrame: %d rows × %d columns", len(df), len(df.columns))
-
-    # Compute binding site count
-    if entry_field_paths and "rcsb_ligand_neighbors" in str(entry_field_paths):
-        df["binding_site_count"] = compute_binding_site_count(df)
-        logger.info("Computed binding_site_count")
-
-    manual_summary = {
-        "Total UniProt IDs": len(all_uniprots),
-        "Total PDB entries": len(all_pdb_ids),
-        "Output granularity": cfg.output.granularity,
-        "Final rows": len(df),
-        "Final columns": len(df.columns),
-    }
-    with open(Path(output_dir) / "summary.json", "w") as f:
-        json.dump(manual_summary, f, indent=2)
-
-    # ── Step 6: Sanitize ──
-    df = sanitize(df, {
-        "dedup_strategy": cfg.output.dedup_strategy,
-        "dedup_keys": cfg.output.dedup_keys,
-        "missing_action": cfg.output.missing_action,
-        "aggregation_mode": cfg.output.aggregation_mode,
-        "aggregation_key": cfg.output.aggregation_key,
-        "granularity": cfg.output.granularity,
-    })
-    logger.info("Sanitized DataFrame: %d rows × %d columns", len(df), len(df.columns))
-
-    # ── Step 7: Export ──
-    console.print("\n[bold]Step 5: Export[/bold] — Writing output files...")
-    written = export_dataset(
-        df,
-        output_dir=output_dir,
-        formats=cfg.output.formats,
-    )
-    for fmt, path in written.items():
-        console.print(f"  [green]✓[/green] {fmt}: {path}")
-        logger.info("Exported %s: %s", fmt, path)
-
-    reports = generate_all_reports(df, uniprot_to_pdbs or {}, output_dir)
-    for rtype, rpath in reports.items():
-        console.print(f"  [green]✓[/green] Report ({rtype}): {rpath}")
-        logger.info("Report %s: %s", rtype, rpath)
-
-    field_config_path = Path(output_dir) / "field_config.yaml"
-    field_config_path.write_text(yaml.dump(
-        {"preset": cfg.fields.preset, "include": field_cfg.include}
-    ) if field_cfg.include else "")
-
-    _save_checkpoint(cfg.pipeline.checkpoint, "export", {
-        "all_uniprots": all_uniprots,
-        "all_pdb_ids": all_pdb_ids,
-        "output_dir": output_dir,
-        "rows": len(df),
-        "columns": len(df.columns),
-    })
-
-    console.print(f"\n[bold green]Pipeline complete![/bold green] Output in: {output_dir}")
-    console.print(f"  Rows: {len(df)}, Columns: {len(df.columns)}")
-    logger.info("Pipeline complete — %d rows, %d columns in %s", len(df), len(df.columns), output_dir)
+# ── Subcommands ──
 
 
 @app.command()
 def discover(
-    uniprots: Optional[str] = typer.Option(None, help="Comma-separated UniProt IDs"),
-    uniprot_file: Optional[str] = typer.Option(None, help="File with one UniProt per line"),
+    uniprots: str | None = typer.Option(None, help="Comma-separated UniProt IDs"),
+    uniprot_file: str | None = typer.Option(None, help="File with one UniProt per line"),
     output: str = typer.Option("./rcsb_discovery", help="Output directory"),
     max_entries: int = typer.Option(1000, help="Max PDB entries"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress output"),
 ) -> None:
     """Discover PDB entries for given UniProt IDs (Step 1 only)."""
+    from rcsb_pipeline.discovery import discover_pdb_ids, save_discovery_results
+
     _setup_logging(output, verbose, quiet)
 
     uniprot_list: list = []
@@ -526,7 +218,9 @@ def discover(
 
     logger.info("Discovering PDB entries for %d UniProts", len(uniprot_list))
     cache = ResponseCache("~/.cache/rcsb-pipeline")
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console):
         uniprot_to_pdbs, raw = discover_pdb_ids(uniprot_list, cache, max_entries=max_entries)
 
     save_discovery_results(uniprot_to_pdbs, output)
@@ -538,13 +232,15 @@ def discover(
 
 @app.command()
 def fetch(
-    pdb_ids: Optional[str] = typer.Option(None, help="Comma-separated PDB IDs"),
-    pdb_file: Optional[str] = typer.Option(None, help="JSON file with PDB ID list"),
+    pdb_ids: str | None = typer.Option(None, help="Comma-separated PDB IDs"),
+    pdb_file: str | None = typer.Option(None, help="JSON file with PDB ID list"),
     output: str = typer.Option("./rcsb_raw", help="Output directory"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress output"),
 ) -> None:
     """Fetch entry data for given PDB IDs (Step 2 only)."""
+    from rcsb_pipeline.fetch import fetch_entry_data, save_raw_data
+
     _setup_logging(output, verbose, quiet)
 
     ids: list = []
@@ -569,6 +265,8 @@ def fetch(
 
     logger.info("Fetching %d PDB entries", len(ids))
     cache = ResponseCache("~/.cache/rcsb-pipeline")
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
         entry_data = fetch_entry_data(ids, ["entry.rcsb_id"], cache, progress=progress)
 
@@ -579,8 +277,8 @@ def fetch(
 
 @app.command()
 def fields(
-    search: Optional[str] = typer.Option(None, help="Search field names/descriptions"),
-    category: Optional[str] = typer.Option(None, help="Filter by category"),
+    search: str | None = typer.Option(None, help="Search field names/descriptions"),
+    category: str | None = typer.Option(None, help="Filter by category"),
     list_categories: bool = typer.Option(False, "--list-categories", help="List all categories"),
     full: bool = typer.Option(False, "--full", help="Show all fields"),
 ) -> None:
@@ -642,7 +340,6 @@ def fields(
         return
 
     if category:
-        loader = SchemaLoader()
         for tname in loader.list_object_types():
             if category.lower() in tname.lower():
                 fields_list = loader.get_fields_for_type(tname)
@@ -656,8 +353,77 @@ def fields(
 @app.command()
 def categories() -> None:
     """List all available field categories."""
-    ctx = typer.Context(fields)
-    ctx.invoke(fields, list_categories=True)
+    fields(None, None, list_categories=True, full=False)
+
+
+@app.command()
+def columns(
+    search: str | None = typer.Option(None, help="Search column names, paths, or descriptions"),
+    category: str | None = typer.Option(None, help="Filter by category"),
+    list_categories: bool = typer.Option(False, "--list-categories", help="List all categories with field counts"),
+    column_file: str | None = typer.Option(None, help="Custom column YAML file"),
+    limit: int = typer.Option(50, help="Max results to show (0 = all)"),
+) -> None:
+    """List and search available columns from the built-in column registry."""
+    reg = ColumnRegistry(column_file=column_file)
+
+    if list_categories:
+        table = Table(title="Column Categories", title_style="bold cyan")
+        table.add_column("Category", style="cyan")
+        table.add_column("Columns")
+        for c in reg.list_categories():
+            table.add_row(str(c["category"]), str(c["count"]))
+        console.print(table)
+        console.print(f"\nTotal: [bold]{reg.count}[/bold] columns")
+        return
+
+    if category:
+        entries = reg.filter_by_category(category)
+        if not entries:
+            console.print(f"[yellow]No columns in category '{category}'[/yellow]")
+            return
+        table = Table(title=f"Columns in '{category}' ({len(entries)})", title_style="bold cyan")
+        table.add_column("Short Name", style="green")
+        table.add_column("Path", style="dim")
+        table.add_column("Type")
+        table.add_column("List")
+        table.add_column("Description")
+        for e in entries[:limit] if limit else entries:
+            desc = (e.get("description") or "")[:80]
+            table.add_row(e["name"], e.get("path", ""), e.get("type", ""), str(e.get("is_list", "")), desc)
+        if limit and len(entries) > limit:
+            console.print(f"[dim]... and {len(entries) - limit} more[/dim]")
+        console.print(table)
+        return
+
+    if search:
+        entries = reg.search(search)
+        if not entries:
+            console.print(f"[yellow]No columns matching '{search}'[/yellow]")
+            return
+        table = Table(title=f"Columns matching '{search}' ({len(entries)})", title_style="bold cyan")
+        table.add_column("Short Name", style="green")
+        table.add_column("Path", style="dim")
+        table.add_column("Type")
+        table.add_column("Category")
+        table.add_column("Description")
+        for e in entries[:limit] if limit else entries:
+            desc = (e.get("description") or "")[:80]
+            table.add_row(e["name"], e.get("path", ""), e.get("type", ""), e.get("category", ""), desc)
+        if limit and len(entries) > limit:
+            console.print(f"[dim]... and {len(entries) - limit} more[/dim]")
+        console.print(table)
+        return
+
+    cats = reg.list_categories()
+    console.print(f"[bold]Column Registry[/bold] — {reg.count} columns\n")
+    table = Table(title=f"Categories ({len(cats)})")
+    table.add_column("Category", style="cyan")
+    table.add_column("Columns")
+    for c in cats:
+        table.add_row(str(c["category"]), str(c["count"]))
+    console.print(table)
+    console.print("\n[dim]Use --search or --category to explore. Use --list-categories for all categories.[/dim]")
 
 
 @app.command()
@@ -679,7 +445,7 @@ def report(
     else:
         df = pd.read_json(path)
 
-    console.print(f"Loaded dataset: {len(df)} rows × {len(df.columns)} columns")
+    console.print(f"Loaded dataset: {len(df)} rows x {len(df.columns)} columns")
 
     from rcsb_pipeline.export import (
         report_coverage,
@@ -692,19 +458,19 @@ def report(
 
     if type in ("all", "coverage"):
         p = report_coverage(df, output_dir=output)
-        console.print(f"  [green]✓[/green] Coverage: {p}")
+        console.print(f"  [green]V[/green] Coverage: {p}")
 
     if type in ("all", "missing"):
         p = report_missing_data(df, output)
-        console.print(f"  [green]✓[/green] Missing: {p}")
+        console.print(f"  [green]V[/green] Missing: {p}")
 
     if type in ("all", "duplicates"):
         p = report_duplicates(df, output)
-        console.print(f"  [green]✓[/green] Duplicates: {p}")
+        console.print(f"  [green]V[/green] Duplicates: {p}")
 
     if type in ("all", "schema"):
         p = report_field_coverage(df, output)
-        console.print(f"  [green]✓[/green] Field coverage: {p}")
+        console.print(f"  [green]V[/green] Field coverage: {p}")
 
 
 @app.command()
@@ -743,17 +509,18 @@ def validate(
     struct_field = df.get("structure_available")
     if struct_field is not None:
         bool_vals = struct_field.dropna().unique()
-        if not all(v in (True, False, 1, 0, "True", "False", "Yes", "No", "true", "false") for v in bool_vals):
+        valid_bools = {True, False, "True", "False", "Yes", "No", "true", "false"}
+        if not all(v in valid_bools for v in bool_vals):
             issues.append("Column 'structure_available' has unexpected values")
 
     if issues:
         console.print("[red]Validation Issues:[/red]")
         for issue in issues:
-            console.print(f"  [yellow]⚠[/yellow] {issue}")
+            console.print(f"  [yellow]W[/yellow] {issue}")
     else:
-        console.print("[green]✓ Dataset validation passed![/green]")
+        console.print("[green]V Dataset validation passed![/green]")
 
-    console.print(f"\nDataset: {len(df)} rows × {len(df.columns)} columns")
+    console.print(f"\nDataset: {len(df)} rows x {len(df.columns)} columns")
     console.print(f"Memory: {df.memory_usage(deep=True).sum() / 1024 / 1024:.1f} MB")
 
 
@@ -764,7 +531,103 @@ def init_config(
     """Generate a default config file."""
     with open(path, "w") as f:
         f.write(DEFAULT_CONFIG.strip() + "\n")
-    console.print(f"[green]✓[/green] Default config written to: {path}")
+    console.print(f"[green]V[/green] Default config written to: {path}")
+
+
+# -- Registry sub-commands --
+
+
+registry_app = typer.Typer(name="registry", help="Manage the processed-data registry")
+
+
+@registry_app.command("status")
+def registry_status_cmd(
+    registry_db: str = typer.Option("~/.cache/rcsb-pipeline-registry.db", help="Path to registry database"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed breakdown"),
+) -> None:
+    """Show statistics for the processed-data registry."""
+    reg = ProcessedRegistry(registry_db)
+    s = reg.status()
+    console.print("[bold]Processed Data Registry[/bold]")
+    console.print(f"  Total entries:         {s['total_entries']}")
+    console.print(f"  Stale entries:         {s['stale_entries']}")
+    console.print(f"  Unique UniProt IDs:    {s['unique_uniprots']}")
+    console.print(f"  Unique PDB IDs:        {s['unique_pdbs']}")
+    console.print(f"  Latest run:            {s['latest_run']}")
+    presets: list[Any] = s.get("presets") or []  # type: ignore[assignment]
+    if verbose and presets:
+        console.print("\n[bold]By preset:[/bold]")
+        for p in presets:
+            console.print(f"  {p['preset'] or '(none)':20s} {p['cnt']} entries")
+    reg.close()
+
+
+@registry_app.command("diff")
+def registry_diff_cmd(
+    uniprots: str = typer.Option(..., help="Comma-separated UniProt IDs"),
+    pdb_ids: str | None = typer.Option(None, help="Comma-separated PDB IDs (optional)"),
+    preset: str = typer.Option("standard", help="Preset to check against"),
+    granularity: str = typer.Option("per-structure", help="Granularity to check against"),
+    registry_db: str = typer.Option("~/.cache/rcsb-pipeline-registry.db", help="Path to registry database"),
+) -> None:
+    """Show which targets are new vs already processed, without running the pipeline."""
+    reg = ProcessedRegistry(registry_db)
+    uid_list = [u.strip() for u in uniprots.split(",") if u.strip()]
+    pid_list = [p.strip() for p in pdb_ids.split(",")] if pdb_ids else []
+    pairs = [(u, "") for u in uid_list]
+    if pid_list:
+        pairs = [(uid, pid) for uid in uid_list for pid in pid_list]
+    result = reg.diff(pairs, preset=preset, granularity=granularity)
+    console.print("[bold]Registry diff[/bold]")
+    console.print(f"  New:                 {len(result['new'])}")
+    console.print(f"  Already processed:   {len(result['already_processed'])}")
+    if result["already_processed"]:
+        console.print("\n[yellow]Already in registry (first 20):[/yellow]")
+        for uid, pid in result["already_processed"][:20]:
+            console.print(f"  {uid} {'/' + pid if pid else '(any structure)'}")
+        if len(result["already_processed"]) > 20:
+            console.print(f"  ... and {len(result['already_processed']) - 20} more")
+    reg.close()
+
+
+@registry_app.command("mark")
+def registry_mark_cmd(
+    stale: bool = typer.Option(True, "--stale/--fresh", help="Mark as stale (will reprocess) or fresh"),
+    uniprots: str | None = typer.Option(None, help="Comma-separated UniProt IDs (all if omitted)"),
+    registry_db: str = typer.Option("~/.cache/rcsb-pipeline-registry.db", help="Path to registry database"),
+) -> None:
+    """Mark entries as stale (will be reprocessed on next run) or fresh."""
+    reg = ProcessedRegistry(registry_db)
+    ids = [u.strip() for u in uniprots.split(",")] if uniprots else None
+    if stale:
+        count = reg.mark_stale(ids)
+        label = "stale"
+    else:
+        count = reg.mark_fresh(ids)
+        label = "fresh"
+    console.print(f"[green]Marked {count} entries as {label}[/green]")
+    reg.close()
+
+
+@registry_app.command("clear")
+def registry_clear_cmd(
+    uniprots: str | None = typer.Option(None, help="Comma-separated UniProt IDs (all if omitted)"),
+    registry_db: str = typer.Option("~/.cache/rcsb-pipeline-registry.db", help="Path to registry database"),
+    force: bool = typer.Option(False, "--force", help="Confirm deletion"),
+) -> None:
+    """Delete entries from the registry. Requires --force."""
+    if not force:
+        console.print("[red]Use --force to confirm deletion[/red]")
+        raise typer.Exit(1)
+    reg = ProcessedRegistry(registry_db)
+    ids = [u.strip() for u in uniprots.split(",")] if uniprots else None
+    count = reg.clear(ids)
+    label = f"for {', '.join(ids)}" if ids else "(all)"
+    console.print(f"[green]Deleted {count} entries {label}[/green]")
+    reg.close()
+
+
+app.add_typer(registry_app)
 
 
 def _main() -> None:

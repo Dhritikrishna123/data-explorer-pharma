@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
 from rcsbapi.data import DataSchema
 
@@ -34,17 +32,14 @@ class SchemaLoader:
         self._schema = DataSchema()
         self._raw = self._schema.schema["data"]["__schema"]
         self._types = self._raw["types"]
-        self._type_map: Dict[str, dict] = {}
+        self._type_map: dict[str, dict] = {}
         for t in self._types:
             self._type_map[t["name"]] = t
 
-    def list_object_types(self) -> List[str]:
-        return sorted(
-            t["name"] for t in self._types
-            if t.get("kind") == "OBJECT" and not t["name"].startswith("__")
-        )
+    def list_object_types(self) -> list[str]:
+        return sorted(t["name"] for t in self._types if t.get("kind") == "OBJECT" and not t["name"].startswith("__"))
 
-    def get_fields_for_type(self, type_name: str) -> List[dict]:
+    def get_fields_for_type(self, type_name: str) -> list[dict]:
         t = self._type_map.get(type_name)
         if not t or not t.get("fields"):
             return []
@@ -52,24 +47,26 @@ class SchemaLoader:
         for f in t["fields"]:
             ret_type, kind, nullable, is_list = _resolve_type(f["type"])
             enum_vals = self._get_enum_values(ret_type)
-            fields.append({
-                "name": f["name"],
-                "type": ret_type,
-                "kind": kind,
-                "nullable": nullable,
-                "is_list": is_list,
-                "description": f.get("description", "") or "",
-                "enum_values": enum_vals,
-            })
+            fields.append(
+                {
+                    "name": f["name"],
+                    "type": ret_type,
+                    "kind": kind,
+                    "nullable": nullable,
+                    "is_list": is_list,
+                    "description": f.get("description", "") or "",
+                    "enum_values": enum_vals,
+                }
+            )
         return fields
 
-    def _get_enum_values(self, type_name: str) -> List[str]:
+    def _get_enum_values(self, type_name: str) -> list[str]:
         for t in self._types:
             if t.get("name") == type_name and t.get("kind") == "ENUM":
                 return [v["name"] for v in t.get("enumValues") or []]
         return []
 
-    def search_fields(self, query: str) -> List[dict]:
+    def search_fields(self, query: str) -> list[dict]:
         q = query.lower()
         results = []
         for type_name in self.list_object_types():
@@ -77,13 +74,15 @@ class SchemaLoader:
             for f in self.get_fields_for_type(type_name):
                 combined = f"{type_name} {f['name']} {f['description']}"
                 if q in combined.lower():
-                    results.append({
-                        "object_name": type_name,
-                        "object_description": obj_desc,
-                        "field_name": f["name"],
-                        "full_path": f"{type_name}.{f['name']}",
-                        "gql_type": f["type"],
-                    })
+                    results.append(
+                        {
+                            "object_name": type_name,
+                            "object_description": obj_desc,
+                            "field_name": f["name"],
+                            "full_path": f"{type_name}.{f['name']}",
+                            "gql_type": f["type"],
+                        }
+                    )
         return results
 
     def field_exists(self, path: str) -> bool:
@@ -95,7 +94,7 @@ class SchemaLoader:
         fields = self.get_fields_for_type(type_name)
         return any(f["name"] == field_name for f in fields)
 
-    def resolve_field_path(self, path: str) -> Optional[dict]:
+    def resolve_field_path(self, path: str) -> dict | None:
         parts = path.split(".")
         if len(parts) < 2:
             return None
@@ -109,9 +108,9 @@ class SchemaLoader:
 
 def discover_available_fields(
     preset_name: str,
-    custom_includes: Optional[List[str]] = None,
-    custom_excludes: Optional[List[str]] = None,
-) -> List[str]:
+    custom_includes: list[str] | None = None,
+    custom_excludes: list[str] | None = None,
+) -> list[str]:
     """Resolve field paths from presets and custom overrides."""
     from rcsb_pipeline.config import load_preset
 

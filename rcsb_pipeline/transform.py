@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 
@@ -11,8 +12,8 @@ import pandas as pd
 def deduplicate(
     df: pd.DataFrame,
     strategy: str = "strict",
-    keys: Optional[List[str]] = None,
-    sort_key: Optional[str] = None,
+    keys: list[str] | None = None,
+    sort_key: str | None = None,
     sort_ascending: bool = True,
 ) -> pd.DataFrame:
     """Remove duplicate rows according to the given strategy.
@@ -97,7 +98,7 @@ def aggregate_protein_rows(
     df: pd.DataFrame,
     group_key: str = "uniprot_id",
     mode: str = "pick-best",
-    sort_key: Optional[str] = None,
+    sort_key: str | None = None,
     sort_ascending: bool = True,
 ) -> pd.DataFrame:
     """Aggregate multiple rows per protein into one.
@@ -121,14 +122,16 @@ def aggregate_protein_rows(
         numeric_cols = df.select_dtypes(include="number").columns.tolist()
         string_cols = df.select_dtypes(exclude="number").columns.tolist()
 
-        agg_map = {}
+        agg_map: dict[str, str | Callable] = {}
         for c in numeric_cols:
             if c != group_key:
                 agg_map[c] = mode
         for c in string_cols:
             if c != group_key:
-                agg_map[c] = "first" if mode == "pick-best" else (
-                    lambda x: x.mode().iloc[0] if not x.mode().empty else x.iloc[0]
+                agg_map[c] = (
+                    "first"
+                    if mode == "pick-best"
+                    else (lambda x: x.mode().iloc[0] if not x.mode().empty else x.iloc[0])
                 )
 
         if agg_map:
@@ -136,16 +139,14 @@ def aggregate_protein_rows(
             return result
 
     if mode == "concat":
-        return df.groupby(group_key).agg(
-            lambda x: ", ".join(str(v) for v in x.unique() if pd.notna(v))
-        ).reset_index()
+        return df.groupby(group_key).agg(lambda x: ", ".join(str(v) for v in x.unique() if pd.notna(v))).reset_index()
 
     return df
 
 
 def compute_binding_site_count(
     df: pd.DataFrame,
-    ligand_neighbor_col: Optional[str] = None,
+    ligand_neighbor_col: str | None = None,
 ) -> pd.Series:
     """Compute approximate binding site count from ligand neighbor data.
 
@@ -179,17 +180,17 @@ def _flatten_unhashable(df: pd.DataFrame) -> pd.DataFrame:
         sample = df[col].dropna()
         if len(sample) == 0:
             continue
-        non_scalar_types = {type(v) for v in sample if not isinstance(v, (str, int, float, bool, bytes, type(None)))}
+        non_scalar_types = {type(v) for v in sample if not isinstance(v, str | int | float | bool | bytes | type(None))}
         if non_scalar_types:
             df[col] = df[col].apply(
-                lambda x: json.dumps(x, default=str) if isinstance(x, (dict, list, tuple, set)) else x
+                lambda x: json.dumps(x, default=str) if isinstance(x, dict | list | tuple | set) else x
             )
     return df
 
 
 def sanitize(
     df: pd.DataFrame,
-    config: Dict[str, Any],
+    config: dict[str, Any],
 ) -> pd.DataFrame:
     """Full sanitization pipeline: coerce → flatten → dedup → missing → aggregate."""
     if df.empty:

@@ -17,11 +17,13 @@ rcsb_output/
 logs/
 checkpoint.json
 
-# Generated schema files
-rcsb_schema.*.json
-rcsb_schema.*.csv
-rcsb_schema.*.xlsx
-rcsb_schema.*.md
+# Generated schema / output / reference files
+rcsb_schema.*
+rcsb_schema_hierarchy.md
+columns.yaml
+COLUMN_REFERENCE.md
+rcsb_discovery/
+rcsb_raw/
 field_statistics.md
 cross_reference_report.md
 
@@ -40,3 +42,8 @@ Thumbs.db
 
 # Temp test outputs
 /tmp/rcsb_*
+
+# Coverage
+coverage.xml
+htmlcov/
+.coverage*
