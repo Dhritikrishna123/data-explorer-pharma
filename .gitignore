@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+venv/
+.venv/
+
+# Cache
+*.db
+.cache/
+
+# Output
+rcsb_output/
+logs/
+checkpoint.json
+
+# Generated schema files
+rcsb_schema.*.json
+rcsb_schema.*.csv
+rcsb_schema.*.xlsx
+rcsb_schema.*.md
+field_statistics.md
+cross_reference_report.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated wheel
+*.whl
+
+# Temp test outputs
+/tmp/rcsb_*

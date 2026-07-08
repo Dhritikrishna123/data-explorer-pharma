@@ -1,0 +1,76 @@
+# rcsb_pipeline/presets/standard.yaml
+# Standard preset — Enhanced structural + functional metadata
+preset: standard
+description: "Standard preset with enhanced PDB + UniProt annotations"
+include:
+  # ── Identifiers ──
+  - entry.rcsb_id
+  - entry.rcsb_entry_container_identifiers.entry_id
+  - entry.rcsb_entry_info.structure_determination_methodology
+
+  # ── Experimental method & resolution ──
+  - entry.exptl.method
+  - entry.exptl.method_details
+  - entry.rcsb_entry_info.experimental_method
+  - entry.rcsb_entry_info.resolution_combined
+  - entry.refine.ls_d_res_high
+  - entry.reflns.d_resolution_high
+
+  # ── Structure composition ──
+  - entry.rcsb_entry_info.deposited_polymer_entity_instance_count
+  - entry.rcsb_entry_info.deposited_nonpolymer_entity_instance_count
+  - entry.rcsb_entry_info.nonpolymer_entity_count
+  - entry.rcsb_entry_info.polymer_entity_count_protein
+  - entry.rcsb_entry_info.deposited_atom_count
+  - entry.rcsb_entry_info.molecular_weight
+  - entry.rcsb_entry_info.polymer_composition
+  - entry.rcsb_entry_info.assembly_count
+  - entry.rcsb_entry_info.deposited_model_count
+  - entry.rcsb_entry_info.disulfide_bond_count
+
+  # ── Structure features ──
+  - entry.struct.title
+  - entry.struct_keywords.text
+  - entry.symmetry.space_group_name_H-M
+  - entry.cell.length_a
+  - entry.cell.length_b
+  - entry.cell.length_c
+  - entry.cell.angle_alpha
+  - entry.cell.angle_beta
+  - entry.cell.angle_gamma
+
+  # ── Refinement ──
+  - entry.refine.ls_R_factor_R_work
+  - entry.refine.ls_R_factor_R_free
+  - entry.refine.overall_SU_R_Cruickshank_DPI
+
+  # ── Polymer entity data ──
+  - entry.polymer_entities.rcsb_polymer_entity_container_identifiers.entity_id
+  - entry.polymer_entities.rcsb_polymer_entity_container_identifiers.entry_id
+  - entry.polymer_entities.rcsb_polymer_entity_container_identifiers.uniprot_ids
+  - entry.polymer_entities.entity_poly.pdbx_seq_one_letter_code
+  - entry.polymer_entities.entity_poly.pdbx_seq_one_letter_code_can
+  - entry.polymer_entities.entity_poly.pdbx_target_identifier
+  - entry.polymer_entities.rcsb_entity_source_organism.organism_name
+  - entry.polymer_entities.rcsb_entity_source_organism.taxonomy_lineage
+  - entry.polymer_entities.rcsb_entity_host_organism.organism_name
+
+  # ── Ligand / nonpolymer data ──
+  - entry.nonpolymer_entities.rcsb_nonpolymer_entity_container_identifiers.nonpolymer_comp_id
+  - entry.nonpolymer_entities.rcsb_nonpolymer_entity_container_identifiers.entry_id
+
+  # ── Citations ──
+  - entry.rcsb_primary_citation.title
+  - entry.rcsb_primary_citation.journal_abbrev
+  - entry.rcsb_primary_citation.pubmed_id
+  - entry.rcsb_primary_citation.year
+
+  # ── UniProt enhanced ──
+  - uniprot.rcsb_uniprot_protein.sequence
+  - uniprot.rcsb_uniprot_protein.name
+  - uniprot.rcsb_uniprot_protein.gene
+  - uniprot.rcsb_uniprot_protein.source_organism
+  - uniprot.rcsb_uniprot_protein.ec
+  - uniprot.rcsb_uniprot_keyword.value
+  - uniprot.rcsb_uniprot_annotation.type
+  - uniprot.rcsb_uniprot_annotation.description

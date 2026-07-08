@@ -1,0 +1,8 @@
+# rcsb_pipeline/presets/full.yaml
+# Full preset — All available fields from the live RCSB GraphQL schema
+# This expands all 317 object types through all reachable paths.
+# WARNING: This produces 3000+ columns. Use --format parquet for performance.
+preset: full
+description: "All available fields from the complete RCSB GraphQL schema"
+include: []
+exclude: []

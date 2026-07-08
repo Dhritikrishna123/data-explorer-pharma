@@ -1,0 +1,22 @@
+# rcsb_pipeline/presets/minimal.yaml
+# Minimal preset — 7 PDB columns + UniProt core fields
+preset: minimal
+description: "Minimal PDB + UniProt fields for target discovery"
+include:
+  # Entry identifiers
+  - entry.rcsb_id
+
+  # Experimental information
+  - entry.exptl.method
+  - entry.rcsb_entry_info.experimental_method
+  - entry.rcsb_entry_info.resolution_combined
+
+  # Structure composition
+  - entry.rcsb_entry_info.deposited_polymer_entity_instance_count
+  - entry.rcsb_entry_info.nonpolymer_entity_count
+
+  # UniProt core
+  - uniprot.rcsb_uniprot_protein.sequence
+  - uniprot.rcsb_uniprot_protein.name
+  - uniprot.rcsb_uniprot_protein.gene
+  - uniprot.rcsb_uniprot_protein.source_organism

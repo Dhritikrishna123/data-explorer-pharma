@@ -1,0 +1,725 @@
+# RCSB PDB Pipeline — Target Discovery Dataset Builder
+
+Fetch, transform, and export RCSB PDB structural data for UniProt-identified proteins,
+producing ML-ready datasets for drug target discovery.
+
+```text
+Input: UniProt IDs → [Search API] → PDB IDs → [Data API] → Raw data → [Transform] → Clean dataset
+```
+
+---
+
+## Quick Start
+
+```bash
+# Install
+pip install -e .
+
+# Run full pipeline (minimal example)
+rcsb-pipeline run --uniprots P01116,P04637 --output ./training_data
+
+# Run with presets and all outputs
+rcsb-pipeline run \
+  --uniprot-file targets.txt \
+  --preset standard \
+  --granularity per-structure \
+  --dedup-strategy keep-best \
+  --missing-action fill-mean \
+  --format csv \
+  --format parquet \
+  --output ./training_data
+```
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Installation](#installation)
+3. [CLI Reference](#cli-reference)
+4. [Pipeline Steps](#pipeline-steps)
+5. [Configuration](#configuration)
+6. [Presets](#presets)
+7. [Field Selection](#field-selection)
+8. [Granularity Modes](#granularity-modes)
+9. [Deduplication Strategies](#deduplication-strategies)
+10. [Missing Value Handling](#missing-value-handling)
+11. [Aggregation Modes](#aggregation-modes)
+12. [Output Formats](#output-formats)
+13. [Output Artifacts](#output-artifacts)
+14. [Caching](#caching)
+15. [Resuming Interrupted Runs](#resuming-interrupted-runs)
+16. [Architecture](#architecture)
+17. [Extending](#extending)
+
+---
+
+## Overview
+
+The RCSB PDB Pipeline discovers protein structures in the Protein Data Bank that
+correspond to a set of input proteins (identified by UniProt accession), fetches
+their complete structural metadata from the official RCSB Data API, enhances it
+with UniProt annotations (sequence, GO terms, names, taxonomy), then produces a
+deduplicated, sanitized, ML-ready dataset.
+
+### What it solves
+
+| Problem | Solution |
+|---------|----------|
+| UniProt IDs don't directly map to PDB entries | Uses RCSB Search API to find all PDB entries per UniProt |
+| RCSB GraphQL schema has 317 types, 2398 fields — overwhelming | Schema explorer + preset field selection |
+| Raw API responses have duplicates, nulls, inconsistent types | Full sanitization pipeline with configurable strategies |
+| Need different output shapes for different ML tasks | Multiple granularity modes + aggregation strategies |
+| Team needs reproducible, auditable datasets | Checkpoint system + full run reports + config snapshots |
+
+---
+
+## Installation
+
+```bash
+# From the rcsb_pipeline directory
+pip install -e .
+
+# Verify
+rcsb-pipeline --help
+```
+
+### Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `rcsb-api>=1.7.0` | Official RCSB Python client (Search + Data APIs) |
+| `typer>=0.12.0` | CLI framework |
+| `pydantic>=2.0` | Configuration validation |
+| `pyyaml>=6.0` | YAML config files |
+| `httpx>=0.27.0` | HTTP client for API calls |
+| `pandas>=2.0` | DataFrame core |
+| `pyarrow>=14.0` | Parquet export |
+| `openpyxl>=3.1.0` | Excel export |
+| `rich>=13.0` | CLI formatting + progress |
+
+---
+
+## CLI Reference
+
+### Global Options
+
+```
+--help         Show help message
+--verbose      Detailed logging
+--quiet        Only errors
+--config FILE  Path to YAML config file
+```
+
+### Commands
+
+#### `run` — Full pipeline
+
+```bash
+rcsb-pipeline run [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--uniprots` | TEXT | — | Comma-separated UniProt IDs |
+| `--uniprot-file` | PATH | — | File with one UniProt per line |
+| `--pdb-ids` | TEXT | — | Comma-separated PDB IDs (skip discovery) |
+| `--gene-symbols` | TEXT | — | Comma-separated gene symbols (auto-resolve) |
+| `--gene-symbol-file` | PATH | — | File with one gene symbol per line |
+| `--preset` | TEXT | `standard` | Field preset: `minimal`, `standard`, `full`, `custom` |
+| `--fields` | TEXT | — | Path to custom field config YAML (if `--preset custom`) |
+| `--granularity` | TEXT | `per-structure` | Output mode: `per-protein`, `per-structure`, `per-chain` |
+| `--format` | TEXT | `csv` | Output format(s). Repeatable: `--format csv --format parquet` |
+| `--output` | PATH | `./rcsb_output` | Output directory |
+| `--dedup-strategy` | TEXT | `strict` | Dedup: `strict`, `key-only`, `keep-first`, `keep-best`, `none` |
+| `--dedup-keys` | TEXT | — | Comma-separated dedup key columns |
+| `--missing-action` | TEXT | `fill-null` | Missing values: `drop`, `fill-0`, `fill-mean`, `fill-null` |
+| `--aggregation` | TEXT | `pick-best` | Aggregation: `pick-best`, `mean`, `concat`, `expand` |
+| `--aggregation-key` | TEXT | `resolution_combined` | Field to sort by for `pick-best` |
+| `--max-entries` | INT | `1000` | Max PDB entries to fetch |
+| `--min-resolution` | FLOAT | `0.0` | Min resolution filter |
+| `--max-resolution` | FLOAT | `10.0` | Max resolution filter |
+| `--methods` | TEXT | — | Comma-separated experimental methods filter |
+| `--no-cache` | FLAG | `False` | Bypass response cache |
+| `--resume` | PATH | — | Resume from checkpoint file |
+
+#### `discover` — Discovery only (Step 1)
+
+```bash
+rcsb-pipeline discover --uniprots P01116 --output ./discovered
+```
+
+Discovers PDB entries for given UniProts using the RCSB Search API.
+Outputs a JSON file with all matched PDB IDs and their metadata.
+
+#### `fetch` — Data fetch only (Step 2)
+
+```bash
+rcsb-pipeline fetch --pdb-ids ./discovered/pdb_ids.json --output ./raw
+```
+
+Fetches full structural data for given PDB entries from the RCSB Data API.
+
+#### `fields` — Schema introspection
+
+```bash
+rcsb-pipeline fields --search ligand
+rcsb-pipeline fields --category "Polymer Entity"
+rcsb-pipeline fields --list-categories
+rcsb-pipeline fields --full
+```
+
+Lists available fields matching search criteria. Uses the schema explorer
+to query the live RCSB GraphQL schema.
+
+#### `categories` — List field categories
+
+```bash
+rcsb-pipeline categories
+```
+
+Shows all field categories and their field counts.
+
+#### `report` — Generate reports from existing output
+
+```bash
+rcsb-pipeline report --data ./output/final.csv --output ./reports
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--data` | PATH | — | Path to output dataset |
+| `--output` | PATH | `./reports` | Report output directory |
+| `--type` | TEXT | `all` | Report type: `coverage`, `missing`, `duplicates`, `schema`, `all` |
+
+#### `validate` — Validate output dataset
+
+```bash
+rcsb-pipeline validate --data ./output/final.csv
+```
+
+Checks the output dataset for data integrity issues:
+- Missing expected columns
+- Unexpected null rates
+- Duplicate rows
+- Type mismatches
+- Out-of-range values
+
+---
+
+## Pipeline Steps
+
+### Step 1: Discovery
+
+**Input:** UniProt IDs (or gene symbols → resolved to UniProt IDs)
+
+**Process:**
+1. For each UniProt ID, query RCSB Search API:
+   `AttributeQuery("rcsb_entry_container_identifiers.uniprot_id", "exact_match", id)`
+2. Collect all matching PDB entry IDs
+3. Apply filters: resolution range, experimental method(s), max entries
+4. Deduplicate PDB IDs across all input UniProts
+
+**Output:** Deduplicated list of PDB entry IDs
+
+### Step 2: Data Fetch
+
+**Input:** PDB entry IDs
+
+**Process:**
+1. Batch entry IDs into groups of 50
+2. For each batch, construct a single GraphQL query fetching:
+   - Entry-level data (rcsb_id, exptl, rcsb_entry_info, etc.)
+   - Polymer entity data (entity_poly, rcsb_polymer_entity_container_identifiers)
+   - Instance data (asym_id, ligand neighbors, features)
+3. Multiplex API calls with 5 concurrent workers
+4. Cache responses in SQLite for resume/replay
+
+**Output:** Raw JSON per PDB entry
+
+### Step 3: UniProt Enhancement
+
+**Input:** List of UniProt IDs
+
+**Process:**
+1. For each UniProt ID, query `uniprot(id)` from RCSB Data API
+2. Extract: sequence, protein names, gene names, EC numbers,
+   GO annotations, source organism, keywords, features
+3. Cache results
+
+**Output:** Enhanced UniProt metadata per protein
+
+### Step 4: Transformation
+
+**Input:** Raw PDB data + Enhanced UniProt data
+
+**Process:**
+1. **Field Selection** — Keep only requested fields from the 2398 available
+2. **Type Coercion** — Cast strings→numbers, parse dates, normalize units
+3. **Missing Value Handling** — Apply configured strategy
+4. **Deduplication** — Remove duplicates per strategy
+5. **Aggregation** — Collapse per granularity mode
+6. **Filtering** — Apply resolution/method constraints at row level
+
+**Output:** Clean DataFrame
+
+### Step 5: Export
+
+**Input:** Clean DataFrame
+
+**Process:**
+1. Write to each requested output format
+2. Generate reports (coverage, missing data, duplicates)
+3. Save run configuration and checkpoint
+4. Write dataset summary
+
+**Output:** Final dataset files + reports
+
+---
+
+## Configuration
+
+The pipeline is configured via YAML files, CLI arguments, or a mix of both.
+CLI arguments override config file values.
+
+### Default config file location
+
+The pipeline looks for `rcsb_pipeline.yaml` in the current directory.
+Custom path via `--config ./my_config.yaml`.
+
+### Example config
+
+```yaml
+# rcsb_pipeline.yaml
+pipeline:
+  cache_dir: ~/.cache/rcsb-pipeline
+  log_dir: ./logs
+  checkpoint: ./checkpoint.json
+  max_concurrent: 5
+  rate_limit: 0.3
+  batch_size: 50
+  retry_max: 3
+  retry_backoff: 2.0
+
+input:
+  uniprots: []
+  uniprot_file: null
+  pdb_ids: []
+  gene_symbols: []
+  gene_symbol_file: null
+
+discovery:
+  max_entries: 1000
+  min_resolution: 0.0
+  max_resolution: 10.0
+  experimental_methods: []
+  exclude_deprecated: true
+
+fields:
+  preset: standard
+  include: []
+  exclude: []
+  custom_config: null
+
+output:
+  directory: ./rcsb_output
+  formats: [csv, parquet]
+  granularity: per-structure
+  dedup_strategy: strict
+  dedup_keys: []
+  missing_action: fill-null
+  aggregation_mode: pick-best
+  aggregation_key: resolution_combined
+```
+
+---
+
+## Presets
+
+Three built-in presets control which fields are included:
+
+### `minimal`
+
+The 7 PDB columns from the Master Target Discovery Dataset schema:
+
+| Column | RCSB Field |
+|--------|------------|
+| pdb_id | `entry.rcsb_id` |
+| experimental_method | `entry.rcsb_entry_info.experimental_method` |
+| resolution | `entry.rcsb_entry_info.resolution_combined` |
+| number_of_chains | `entry.rcsb_entry_info.deposited_polymer_entity_instance_count` |
+| ligand_count | `entry.rcsb_entry_info.nonpolymer_entity_count` |
+| binding_site_count | computed from `RcsbLigandNeighbors` |
+| structure_available | derived: True if PDB ID exists |
+| uniprot_id | from input |
+| sequence | `uniprot.rcsb_uniprot_protein.sequence` |
+| protein_name | `uniprot.rcsb_uniprot_protein.name` |
+| gene_symbol | `uniprot.rcsb_uniprot_protein.gene` |
+| organism | `uniprot.rcsb_uniprot_protein.source_organism` |
+
+### `standard`
+
+Minimal + enhanced structural metadata + UniProt annotations.
+~50 fields covering:
+- All minimal fields
+- Entry info: molecular weight, polymer composition, atom counts, disulfide bonds
+- Polymer entity info: sequence, entity IDs
+- UniProt: EC numbers, GO annotations, keywords, features
+
+### `full`
+
+All available fields from the live RCSB GraphQL schema.
+Expands all 317 object types through all reachable paths.
+~3000+ columns. Use with `--format parquet` for performance.
+
+### `custom`
+
+User-defined field selection via YAML:
+
+```yaml
+# my_fields.yaml
+preset: custom
+include:
+  - entry.rcsb_id
+  - entry.rcsb_entry_info.resolution_combined
+  - entry.rcsb_entry_info.deposited_polymer_entity_instance_count
+  - entry.rcsb_entry_info.experimental_method
+  - uniprot.rcsb_uniprot_protein.sequence
+  - uniprot.rcsb_uniprot_protein.name
+exclude: []
+```
+
+---
+
+## Field Selection
+
+### By name
+
+```bash
+rcsb-pipeline fields --search resolution
+```
+
+Shows all fields with "resolution" in their name or description.
+
+### By category
+
+```bash
+rcsb-pipeline fields --category "Polymer Entity"
+```
+
+Lists all fields organized under the given category.
+
+### All categories
+
+```bash
+rcsb-pipeline categories
+```
+
+Shows:
+
+| Category | Fields |
+|----------|-------:|
+| Entry | 155 |
+| Polymer Entity | 105 |
+| Experimental Data (X-ray) | 230 |
+| UniProt Integration | 72 |
+| ...
+
+### Field paths
+
+Fields are specified as dot-separated paths from the root query:
+
+```
+entry.rcsb_entry_info.resolution_combined
+entry.exptl.method
+uniprot.rcsb_uniprot_protein.sequence
+entry.polymer_entities.entity_poly.pdbx_seq_one_letter_code
+```
+
+---
+
+## Granularity Modes
+
+| Mode | Key | Rows | Use Case |
+|------|-----|:----:|----------|
+| `per-protein` | (uniprot_id) | One per protein | Protein-level ML (classify targets) |
+| `per-structure` | (uniprot_id, pdb_id) | One per PDB entry | Structure-level analysis (default) |
+| `per-chain` | (uniprot_id, pdb_id, asym_id) | One per chain | Chain-level features |
+| `per-assembly` | (uniprot_id, pdb_id, assembly_id) | One per assembly | Oligomeric/complex analysis |
+| `per-entity` | (uniprot_id, pdb_id, entity_id) | One per entity | Entity-level polymer analysis |
+
+- **per-protein**: When a protein has multiple structures, they are aggregated
+  using the configured aggregation mode.
+- **per-structure**: Each PDB entry for a protein becomes a separate row.
+  A protein with 5 PDB entries → 5 rows.
+- **per-chain**: If a PDB entry has 3 chains matching the UniProt → 3 rows.
+
+---
+
+## Deduplication Strategies
+
+| Strategy | Behavior | When to use |
+|----------|----------|-------------|
+| `strict` | Drops rows where ALL columns are identical | Safe default |
+| `key-only` | Drops by composite key (default: uniprot_id + pdb_id) | After merging multiple sources |
+| `keep-first` | First occurrence wins, drop subsequent | Quick processing |
+| `keep-best` | Sort by a key (e.g., resolution), keep best | Quality-focused ML |
+| `keep-latest` | Keep most recently deposited structure | Freshness-focused |
+| `none` | Keep all rows | Debugging |
+
+**Best practice for ML training:** Use `keep-best` with `--aggregation-key resolution_combined`
+to get the highest-resolution structure per protein or per (protein, PDB) pair.
+
+---
+
+## Missing Value Handling
+
+| Strategy | Numeric fields | String fields | When to use |
+|----------|---------------|---------------|-------------|
+| `drop` | Drop row | Drop row | Small datasets |
+| `fill-null` | Leave as NaN | Leave as empty | Default |
+| `fill-0` | Fill with 0 | Fill with `""` | When null = absence |
+| `fill-mean` | Fill with column mean | Fill with mode | When imputation is safe |
+| `fill-value` | Fill with config value | Fill with config value | Custom |
+
+---
+
+## Aggregation Modes
+
+Used when multiple PDB entries map to the same UniProt protein
+and `--granularity per-protein`.
+
+| Mode | Numeric | Text/ID | Use case |
+|------|---------|---------|----------|
+| `pick-best` | Best row by key | Best row by key | Keep the best structure (default) |
+| `mean` | Mean | Mode | Average structural properties |
+| `min` | Min | First alphabetically | Conservative estimates |
+| `max` | Max | Last alphabetically | Upper bounds |
+| `concat` | Comma-separated list | Comma-separated list | Preserve all values |
+| `expand` | One row per PDB | One row per PDB | Actually `per-structure` mode |
+
+---
+
+## Output Formats
+
+| Format | File | Size | ML-ready | Human-readable |
+|--------|------|:----:|:--------:|:--------------:|
+| CSV | `final_dataset.csv` | Large | Yes (load with pandas) | Yes |
+| Parquet | `final_dataset.parquet` | Small (compressed) | Yes (best perf) | No |
+| JSON | `final_dataset.json` | Largest | Yes | Yes |
+| Excel | `final_dataset.xlsx` | Large | No (limited rows) | Yes (filters) |
+
+**Default:** CSV + Parquet (both). Parquet preserves column types, is 5-10x smaller,
+and loads faster.
+
+---
+
+## Output Artifacts
+
+Running `rcsb-pipeline run --output ./training_data` produces:
+
+```
+training_data/
+├── final_dataset.csv                  # ML-ready flat table
+├── final_dataset.parquet              # Same data, Parquet format
+├── final_dataset.json                 # Same data, JSON lines
+├── dataset_summary.json               # Row count, columns, types
+│
+├── logs/
+│   ├── pipeline.log                   # Full run log
+│   ├── discovery.jsonl                # Each search query + result
+│   └── fetch.jsonl                    # Each API call + timing
+│
+├── reports/
+│   ├── coverage_report.md             # Which UniProts → PDB
+│   ├── field_coverage.md              # % non-null per field
+│   ├── duplicate_report.md            # Dedup summary
+│   └── missing_data_report.md         # Missing value patterns
+│
+├── checkpoints/
+│   └── pipeline_state.json            # Resume state
+│
+├── cache/
+│   └── rcsb_cache.db                  # SQLite response cache
+│
+├── run_config.yaml                    # Frozen config for this run
+├── field_config.yaml                  # Field selection for this run
+└── .gitignore
+```
+
+---
+
+## Caching
+
+All RCSB API responses are cached in a local SQLite database.
+
+- **Location:** `{output_dir}/cache/rcsb_cache.db` or `~/.cache/rcsb-pipeline/rcsb_cache.db`
+- **TTL:** Responses are cached indefinitely (schema rarely changes)
+- **Invalidation:** Use `--no-cache` to bypass; delete the cache DB to clear
+- **Key:** Hash of query + arguments
+- **Benefit:** Re-running the pipeline on the same UniProts takes seconds (reads from cache)
+
+---
+
+## Resuming Interrupted Runs
+
+The pipeline saves checkpoints after each stage.
+
+```bash
+# If a run is interrupted:
+rcsb-pipeline run --uniprots targets.txt --output ./training_data
+
+# Resume from where it left off:
+rcsb-pipeline run --resume ./training_data/checkpoints/pipeline_state.json
+```
+
+Checkpoints capture:
+- Which discovery results were completed
+- Which API responses were fetched
+- Which transformation stage was reached
+
+---
+
+## Architecture
+
+```text
+                    ┌──────────────────┐
+                    │     Input        │
+                    │  (UniProt/PDB)   │
+                    └────────┬─────────┘
+                             │
+                             ▼
+┌──────────────────────────────────────────────────────┐
+│              1. Discovery Layer                       │
+│  ┌────────────────────────────────────────────────┐  │
+│  │  RCSB Search API (AttributeQuery)               │  │
+│  │    attribute: rcsb_entry_container_identifiers  │  │
+│  │               .uniprot_id                       │  │
+│  │    value: P01116                                │  │
+│  │  → Returns list of PDB entry_ids               │  │
+│  └────────────────────────────────────────────────┘  │
+│              │                                        │
+│              ▼                                        │
+│  ┌────────────────────────────────────────────────┐  │
+│  │  Filter: resolution, method, max_entries       │  │
+│  │  Dedup: merge PDB IDs across input UniProts    │  │
+│  └────────────────────────────────────────────────┘  │
+└──────────────────────┬───────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│              2. Fetch Layer                           │
+│  ┌────────────────────────────────────────────────┐  │
+│  │  RCSB Data API (entry query)                    │  │
+│  │  - Batch PDB IDs (50/batch)                     │  │
+│  │  - 5 concurrent workers                         │  │
+│  │  - Rate limited (0.3s)                          │  │
+│  │  - Exponential backoff retry                    │  │
+│  │  - SQLite cache                                 │  │
+│  └────────────────────────────────────────────────┘  │
+│              │                                        │
+│              ▼                                        │
+│  ┌────────────────────────────────────────────────┐  │
+│  │  RCSB Data API (uniprot query)                  │  │
+│  │  - Fetch UniProt enhanced data                  │  │
+│  │  - Sequence, GO, EC, names                     │  │
+│  │  - Cache results                                │  │
+│  └────────────────────────────────────────────────┘  │
+└──────────────────────┬───────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│              3. Transform Layer                       │
+│  ┌────────────────────────────────────────────────┐  │
+│  │  Field Selection → Pick from 2398 fields       │  │
+│  │  Type Coercion → String→Float, etc.            │  │
+│  │  Missing Handling → drop/fill-null/fill-mean   │  │
+│  │  Deduplication → strict/key-only/keep-best     │  │
+│  │  Aggregation → pick-best/mean/concat           │  │
+│  │  Binding Site Count → compute from neighbors   │  │
+│  └────────────────────────────────────────────────┘  │
+└──────────────────────┬───────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│              4. Export Layer                          │
+│  ┌────────────────────────────────────────────────┐  │
+│  │  CSV      → final_dataset.csv                  │  │
+│  │  Parquet  → final_dataset.parquet              │  │
+│  │  JSON     → final_dataset.json                 │  │
+│  │  Excel    → final_dataset.xlsx                 │  │
+│  │  Reports  → coverage, missing, duplicates      │  │
+│  └────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────┘
+```
+
+### Module Map
+
+| Module | Purpose | Depends on |
+|--------|---------|------------|
+| `config.py` | Pydantic config models | pydantic |
+| `schema_loader.py` | Live schema introspection | rcsbapi.data |
+| `discovery.py` | Search API → PDB IDs | rcsbapi.search |
+| `cache.py` | SQLite response cache | sqlite3 (stdlib) |
+| `fetch.py` | Data API + batching | rcsbapi.data, cache |
+| `transform.py` | Dedup, missing, aggregate | pandas |
+| `export.py` | All output formats + reports | pandas, pyarrow, openpyxl |
+| `cli.py` | Typer CLI | typer, rich |
+
+---
+
+## Extending
+
+### Adding new fields
+
+The schema explorer discovers all available fields from the live RCSB
+GraphQL schema. Add to `presets/standard.yaml` to include new fields.
+
+### Custom field computation
+
+To add a computed column (like `binding_site_count`), add a function
+in `transform.py` and register it in the field selection:
+
+```yaml
+computed_fields:
+  binding_site_count:
+    type: int
+    description: Number of unique ligand interactions per chain
+    dependencies:
+      - entry.polymer_entity_instances.rcsb_ligand_neighbors
+```
+
+### Custom aggregators
+
+Extend `transform.py` with a new aggregation class:
+
+```python
+class CustomAggregator(BaseAggregator):
+    def aggregate(self, group: pd.DataFrame) -> pd.Series:
+        # Return aggregated row
+        pass
+```
+
+---
+
+## Development
+
+```bash
+# Install in development mode
+pip install -e .
+
+# Run tests
+pytest tests/
+
+# Lint
+ruff check .
+
+# Type checking
+mypy rcsb_pipeline/
+```
+
+---
+
+## License
+
+Internal use — Target Discovery Platform.
