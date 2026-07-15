@@ -31,7 +31,7 @@ include:
   # ── Structure features ──
   - entry.struct.title
   - entry.struct_keywords.text
-  - entry.symmetry.space_group_name_H-M
+  - entry.symmetry.space_group_name_H_M
   - entry.cell.length_a
   - entry.cell.length_b
   - entry.cell.length_c
@@ -51,9 +51,9 @@ include:
   - entry.polymer_entities.entity_poly.pdbx_seq_one_letter_code
   - entry.polymer_entities.entity_poly.pdbx_seq_one_letter_code_can
   - entry.polymer_entities.entity_poly.pdbx_target_identifier
-  - entry.polymer_entities.rcsb_entity_source_organism.organism_name
+  - entry.polymer_entities.rcsb_entity_source_organism.scientific_name
   - entry.polymer_entities.rcsb_entity_source_organism.taxonomy_lineage
-  - entry.polymer_entities.rcsb_entity_host_organism.organism_name
+  - entry.polymer_entities.rcsb_entity_host_organism.scientific_name
 
   # ── Ligand / nonpolymer data ──
   - entry.nonpolymer_entities.rcsb_nonpolymer_entity_container_identifiers.nonpolymer_comp_id
@@ -62,7 +62,7 @@ include:
   # ── Citations ──
   - entry.rcsb_primary_citation.title
   - entry.rcsb_primary_citation.journal_abbrev
-  - entry.rcsb_primary_citation.pubmed_id
+  - entry.rcsb_primary_citation.pdbx_database_id_PubMed
   - entry.rcsb_primary_citation.year
 
   # ── UniProt enhanced ──

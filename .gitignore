@@ -43,6 +43,9 @@ Thumbs.db
 # Temp test outputs
 /tmp/rcsb_*
 
+# Local demo guide (gitignored)
+DEMO_GUIDE.md
+
 # Coverage
 coverage.xml
 htmlcov/

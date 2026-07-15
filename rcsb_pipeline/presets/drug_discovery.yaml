@@ -1,0 +1,25 @@
+# rcsb_pipeline/presets/drug_discovery.yaml
+# Drug discovery preset — protein metadata + structure + ligands
+preset: drug_discovery
+description: "Drug discovery focused: protein metadata, structure, ligands"
+include:
+  # ── Identifiers ──
+  - entry.rcsb_id
+
+  # ── Experimental method & resolution ──
+  - entry.exptl.method
+  - entry.rcsb_entry_info.resolution_combined
+
+  # ── Structure composition ──
+  - entry.rcsb_entry_info.deposited_polymer_entity_instance_count
+  - entry.rcsb_entry_info.deposited_nonpolymer_entity_instance_count
+  - entry.rcsb_entry_info.nonpolymer_entity_count
+  - entry.rcsb_entry_info.molecular_weight
+
+  # ── Polymer entity data (sequence + organism) ──
+  - entry.polymer_entities.entity_poly.pdbx_seq_one_letter_code_can
+  - entry.polymer_entities.rcsb_entity_source_organism.scientific_name
+
+  # ── UniProt ──
+  - uniprot.rcsb_uniprot_protein.sequence
+  - uniprot.rcsb_uniprot_protein.name

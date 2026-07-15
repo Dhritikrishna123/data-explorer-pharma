@@ -16,11 +16,16 @@ from rcsb_pipeline.cache import ResponseCache
 logger = logging.getLogger("rcsb-pipeline")
 
 
+def _strip_prefix(path: str, prefix: str = "entry.") -> str:
+    return path[len(prefix) :] if path.startswith(prefix) else path
+
+
 def _execute_entry_query(pdb_ids: list[str], field_paths: list[str]) -> dict[str, Any]:
+    clean = [_strip_prefix(p, "entry.") for p in field_paths]
     query = DataQuery(
         input_type="entry",
         input_ids=pdb_ids,
-        return_data_list=field_paths,
+        return_data_list=clean,
     )
     result = query.exec()
     data = {}
@@ -35,10 +40,11 @@ def _execute_entry_query(pdb_ids: list[str], field_paths: list[str]) -> dict[str
 
 
 def _execute_uniprot_query(uniprot_ids: list[str], field_paths: list[str]) -> dict[str, Any]:
+    clean = [_strip_prefix(p, "uniprot.") for p in field_paths]
     query = DataQuery(
         input_type="uniprot",
         input_ids=uniprot_ids,
-        return_data_list=field_paths,
+        return_data_list=clean,
     )
     result = query.exec()
     data = {}
@@ -150,25 +156,20 @@ def fetch_uniprot_data(
             uncached_ids.append(uid)
 
     if uncached_ids:
-        batch_size = 50
-        for i in range(0, len(uncached_ids), batch_size):
-            batch = uncached_ids[i : i + batch_size]
+        for uid in uncached_ids:
             try:
-                data = _execute_uniprot_query(batch, field_paths)
-                for uid, entry_data in data.items():
-                    results[uid] = entry_data
+                data = _execute_uniprot_query([uid], field_paths)
+                if uid in data:
+                    results[uid] = data[uid]
                     ck = f"uniprot:{uid}:{','.join(sorted(field_paths))}"
-                    cache.set(ck, entry_data)
-                for uid in batch:
-                    if uid not in data:
-                        results[uid] = {"rcsb_id": uid, "_no_data": True}
+                    cache.set(ck, data[uid])
+                else:
+                    results[uid] = {"rcsb_id": uid, "_no_data": True}
                 time.sleep(rate_limit)
             except Exception as e:  # noqa: BLE001
-                logger.warning("UniProt fetch failed for batch starting with %s: %s", batch[0], e, exc_info=True)
-                for uid in batch:
-                    results[uid] = {"rcsb_id": uid, "error": str(e)}
-            for _ in batch:
-                _advance()
+                logger.warning("UniProt fetch failed for %s: %s", uid, e, exc_info=True)
+                results[uid] = {"rcsb_id": uid, "error": str(e)}
+            _advance()
 
     return results
 

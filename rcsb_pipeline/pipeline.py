@@ -357,6 +357,8 @@ class PipelineOrchestrator:
                         for p in parts[1:]:
                             if isinstance(val, dict):
                                 val = val.get(p)
+                            elif isinstance(val, list) and val:
+                                val = val[0].get(p) if isinstance(val[0], dict) else None
                             else:
                                 val = None
                                 break
@@ -372,6 +374,8 @@ class PipelineOrchestrator:
                         for p in parts[1:]:
                             if isinstance(val, dict):
                                 val = val.get(p)
+                            elif isinstance(val, list) and val:
+                                val = val[0].get(p) if isinstance(val[0], dict) else None
                             else:
                                 val = None
                                 break
@@ -383,9 +387,7 @@ class PipelineOrchestrator:
         df = pd.DataFrame(rows)
         logger.info("Raw DataFrame: %d rows x %d columns", len(df), len(df.columns))
 
-        if self.entry_field_paths and "rcsb_ligand_neighbors" in str(self.entry_field_paths):
-            df["binding_site_count"] = compute_binding_site_count(df)
-            logger.info("Computed binding_site_count")
+        self._add_derived_columns(df)
 
         output_dir = self.cfg.output.directory
         summary = {
@@ -399,6 +401,27 @@ class PipelineOrchestrator:
             json.dump(summary, f, indent=2)
 
         return df
+
+    def _add_derived_columns(self, df: pd.DataFrame) -> None:
+        """Add computed columns: protein_length, number_of_chains, binding_site_count."""
+        if "rcsb_uniprot_protein_sequence" in df.columns:
+            df["protein_length"] = df["rcsb_uniprot_protein_sequence"].apply(
+                lambda x: len(str(x)) if pd.notna(x) else 0
+            )
+            logger.info("Computed protein_length")
+
+        if "rcsb_entry_info_deposited_polymer_entity_instance_count" in df.columns:
+            df["number_of_chains"] = df["rcsb_entry_info_deposited_polymer_entity_instance_count"].fillna(0).astype(int)
+            logger.info("Computed number_of_chains")
+
+        if "rcsb_ligand_neighbors" in str(self.entry_field_paths):
+            df["binding_site_count"] = compute_binding_site_count(df)
+            logger.info("Computed binding_site_count (from ligand neighbors)")
+        elif "rcsb_entry_info_deposited_nonpolymer_entity_instance_count" in df.columns:
+            df["binding_site_count"] = (
+                df["rcsb_entry_info_deposited_nonpolymer_entity_instance_count"].fillna(0).astype(int)
+            )
+            logger.info("Computed binding_site_count (from ligand instances)")
 
     def _sanitize(self, df: pd.DataFrame) -> pd.DataFrame:
         return sanitize(

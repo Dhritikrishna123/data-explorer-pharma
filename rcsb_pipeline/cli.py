@@ -99,7 +99,7 @@ def run(
     pdb_ids: str | None = typer.Option(None, help="Comma-separated PDB IDs (skip discovery)"),
     gene_symbols: str | None = typer.Option(None, help="Comma-separated gene symbols"),
     gene_symbol_file: str | None = typer.Option(None, help="File with one gene symbol per line"),
-    preset: str = typer.Option("standard", help="Field preset: minimal, standard, full, custom"),
+    preset: str = typer.Option("standard", help="Field preset: minimal, standard, full, custom, drug_discovery"),
     columns: str | None = typer.Option(None, help="Comma-separated column short names"),
     column_file: str | None = typer.Option(None, help="Path to custom column YAML file"),
     fields: str | None = typer.Option(None, help="Path to custom field config YAML"),
